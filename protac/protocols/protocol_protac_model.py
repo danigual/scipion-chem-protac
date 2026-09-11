@@ -178,7 +178,7 @@ class ProtPROTACModel(EMProtocol):
         x, y, z = self._getSiteCoords()
         site = f'{x:.4f},{y:.4f},{z:.4f}'
         args = (f'--phase frodock --receptor "{receptorFile}" --target "{targetFile}" '
-               f'--smiles "{self.protacSmiles.get().strip()}" --site {site}')
+               f'--smiles "{self.protacSmiles.get().strip()}" --site={site}')
 
         # Both E3 ligand conformers, or neither: --phase filter derives lig_locate_num
         # from this same pair (see _getLigLocateNum) - _validate() already rejects a lone
