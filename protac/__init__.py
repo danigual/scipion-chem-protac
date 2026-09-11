@@ -36,10 +36,6 @@ from rosetta import Plugin as RosettaPlugin, ROSETTA_DIC
 from .constants import *
 
 _version_ = "0.1"
-# XXX: protac_icon.png doesn't exist yet (the earlier copy was just rosetta's own logo,
-# removed - it wasn't a real PROTAC icon). TODO: design/add a real one, then set _logo.
-_references = ['LeaverFay2011']
-
 # FRODOCK is a separate external tool (not Rosetta), used by the PROTAC-Model pipeline
 # for the initial global protein-protein docking step. No 'version' key: we don't pin/
 # validate a specific FRODOCK version, only that FRODOCK_HOME points somewhere real.
@@ -56,15 +52,9 @@ VINA_DIC = {'name': 'vina', 'version': '1.2.7', 'home': 'VINA_HOME'}
 VOROMQA_DIC = {'name': 'voromqa', 'version': '1.29.4816', 'home': 'VOROMQA_HOME'}
 FCC_DIC = {'name': 'fcc', 'version': 'latest', 'home': 'FCC_HOME'}
 
-# PROTAC-Model itself (gaoqiweng/PROTAC-Model): its own driving code (main.py, utils/*) is
-# called directly by the protocol instead of being reimplemented here - see
-# protocol_protac_model.py and rosetta/scripts/run_*.py. PROTAC_MODEL_HOME just needs a
-# checkout of that repo (main.py + utils/), nothing to build. PROTAC_MODEL_PYTHON_HOME is
-# separate: that repo's code is genuine Python 2 (print statements, dict.has_key(), etc.),
-# so it needs its own Python 2.7 conda env (with rdkit for py2 installed) to run under -
-# never Scipion's own scipion3 env, same isolation reasoning as pwchem's RDKIT_DIC/
-# OPENBABEL_DIC. Both are public/open source (no license gate), so both get InstallHelper
-# support too.
+# PROTAC-Model's own code (main.py, utils/*) is called directly, not reimplemented (see
+# protocol_protac_model.py/protac/scripts/run_*.py). Its code is genuine Python 2, so
+# PROTAC_MODEL_PYTHON_HOME is a dedicated Python 2.7+rdkit conda env, never scipion3's own.
 PROTAC_MODEL_DIC = {'name': 'protac-model', 'version': 'latest', 'home': 'PROTAC_MODEL_HOME'}
 PROTAC_MODEL_PYTHON_DIC = {'name': 'protac-model-python', 'version': '2.7',
                            'home': 'PROTAC_MODEL_PYTHON_HOME'}
@@ -76,16 +66,12 @@ class Plugin(pwchemPlugin):
     @classmethod
     def _defineVariables(cls):
         """ Return and write a variable in the config file. """
-        # FRODOCK_HOME: license click-through required on chaconlab.org before download -
-        # no auto-detection, defaultValue=None means: if the user hasn't set FRODOCK_HOME
-        # in scipion.conf or their shell environment, this stays None until they point it
-        # at their own download.
+        # FRODOCK_HOME stays manual (license click-through, see FRODOCK_DIC above) - None
+        # until the user points it at their own download.
         cls._defineVar(FRODOCK_DIC['home'], None)
 
-        # The five tools below have no license gate, so their home is wherever
-        # defineBinaries()/InstallHelper installs them (software/em/<name>-<version>/...)
-        # instead of a manually-set path - _defineEmVar (not _defineVar) is what wires a
-        # variable to that Scipion-managed package location.
+        # The five tools below have no license gate - _defineEmVar wires each home to
+        # wherever defineBinaries()/InstallHelper installs it.
         cls._defineEmVar(ADFRSUITE_DIC['home'], cls.getEnvName(ADFRSUITE_DIC))
         cls._defineEmVar(VINA_DIC['home'], cls.getEnvName(VINA_DIC))
         cls._defineEmVar(VOROMQA_DIC['home'], cls.getEnvName(VOROMQA_DIC))
@@ -95,10 +81,8 @@ class Plugin(pwchemPlugin):
 
     @classmethod
     def defineBinaries(cls, env):
-        # FRODOCK stays out of here on purpose: it requires accepting a click-through
-        # license agreement that can't be scripted, so it's never auto-installed.
-        # ROSETTA_HOME is scipion-chem-rosetta's own responsibility, not this plugin's.
-        # The remaining five have no such gate.
+        # FRODOCK/Rosetta excluded on purpose (manual, license-gated - see FRODOCK_DIC
+        # above; ROSETTA_HOME is scipion-chem-rosetta's own responsibility).
         cls.addADFRSuitePackage(env)
         cls.addVinaPackage(env)
         cls.addVoromqaPackage(env)
@@ -106,7 +90,6 @@ class Plugin(pwchemPlugin):
         cls.addProtacModelPackage(env)
         cls.addProtacModelPythonPackage(env)
 
-    # ---------------------------- Package installers (InstallHelper) -------------
     # ---------------------------- Package installers (InstallHelper) -------------
     @classmethod
     def addADFRSuitePackage(cls, env, default=True):
@@ -122,11 +105,9 @@ class Plugin(pwchemPlugin):
         installer = InstallHelper(ADFRSUITE_DIC['name'], packageHome=cls.getVar(ADFRSUITE_DIC['home']),
                                   packageVersion=ADFRSUITE_DIC['version'])
         installer.addCommand(
-            # install.sh doesn't cd to its own folder before looking for its sibling
-            # tarballs (Python2.7.tar.gz, etc.) - it must be run with cwd inside the
-            # extracted folder, not invoked as './ADFRsuite*/install.sh' from outside it.
-            # Running it from outside makes it search for Python*.tar.gz
-            # one level up from where it actually is.
+            # install.sh needs cwd inside the extracted folder (doesn't cd there itself) -
+            # running it from outside breaks the
+            # sibling tarball lookup (Python2.7.tar.gz etc.) one level up.
             'wget -q https://ccsb.scripps.edu/adfr/download/1038/ -O adfrsuite.tar.gz && '
             'tar -xzf adfrsuite.tar.gz && '
             '(cd ADFRsuite_x86_64Linux_1.0 && ./install.sh -d .. -c 0)',
@@ -347,8 +328,7 @@ class Plugin(pwchemPlugin):
             'ADFRSUITE': cls._requireToolHome(ADFRSUITE_DIC),
             'VINA': cls._requireToolHome(VINA_DIC),
             'VOROMQA': cls._requireToolHome(VOROMQA_DIC),
-            # FCC_HOME is the parent InstallHelper cloned into; the actual FCC root
-            # PROTAC-Model expects is one level down - same reasoning as getFCCScript().
+            # Same one-level-down layout as getFCCScript().
             'FCC': os.path.join(cls._requireToolHome(FCC_DIC), FCC_DIC['name']),
             'ROSETTA': rosettaHome,
             'PROTAC_MODEL_HOME': cls.getProtacModelScript(),

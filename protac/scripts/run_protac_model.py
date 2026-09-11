@@ -2,16 +2,12 @@
 # -*- coding: utf-8 -*-
 #
 # Python 2 driver for PROTAC-Model (gaoqiweng/PROTAC-Model). Launched as a separate
-# process (not imported) by rosetta/protocols/protocol_protac_model.py, with the
-# PROTAC_MODEL_PYTHON_HOME conda env activated - see rosetta/__init__.py's
-# runCondaScript(). Runs under whatever cwd the caller chose (extra/frodock/ for
-# --phase frodock/filter, extra/rosetta/ for --phase refine), matching the layout
-# main.py itself builds around fro.frodock()/fro.filter_frodock()/ros.rosetta().
+# process by protac/protocols/protocol_protac_model.py under the PROTAC_MODEL_PYTHON_HOME
+# conda env (see protac/__init__.py's runCondaScript()), from whatever cwd the caller
+# chose (extra/frodock/ for --phase frodock/filter, extra/rosetta/ for --phase refine).
 #
-# This file only stages input files and calls ONE of PROTAC-Model's own high-level
-# functions per phase: splitting those functions further would mean reimplementing their
-# internal orchestration (chained os.chdir, shell calls, a multiprocessing.Pool per pose)
-# ourselves, which is exactly what calling the original code is meant to avoid.
+# Only stages inputs and calls ONE of PROTAC-Model's own high-level functions per phase;
+# splitting them further would mean reimplementing their internal orchestration.
 
 import argparse
 import glob
@@ -106,14 +102,12 @@ def runRefine(args):
 def parseArgs():
     parser = argparse.ArgumentParser()
     parser.add_argument('--phase', required=True, choices=['frodock', 'filter', 'refine'])
-    # --phase frodock
     parser.add_argument('--receptor')
     parser.add_argument('--target')
     parser.add_argument('--smiles')
     parser.add_argument('--site')
     parser.add_argument('--e3lig1', default=None)
     parser.add_argument('--e3lig2', default=None)
-    # --phase filter / refine
     parser.add_argument('--cpu', type=int, default=1)
     parser.add_argument('--lig-locate-num', dest='ligLocateNum', type=int, default=1)
     parser.add_argument('--target-smi', dest='targetSmi', default='none')

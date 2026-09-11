@@ -280,11 +280,8 @@ class ProtPROTACModel(EMProtocol):
             errors.append('"E3 ligand conformer 2" was set without "E3 ligand conformer 1". '
                           'Set conformer 1 first, or clear conformer 2.')
 
-        # getProtacModelEnviron() covers all 6 external tool homes (FRODOCK, ADFRsuite,
-        # Vina, Voromqa, FCC, Rosetta) in one call; getProtacModelPython() additionally
-        # checks the dedicated Python 2.7 env exists. Both raise FileNotFoundError on the
-        # first missing one rather than returning a list, so only that first problem is
-        # ever reported per _validate() call - acceptable, the user fixes one at a time.
+        # Both raise FileNotFoundError on the first missing tool home rather than a list,
+        # so only one error is reported per call - acceptable, fixed one at a time.
         for check in (Plugin.getProtacModelEnviron, Plugin.getProtacModelPython):
             try:
                 check()
