@@ -352,6 +352,13 @@ class Plugin(pwchemPlugin):
         cls.runProgram(program, args, extraEnvDict=extraEnvDict, cwd=cwd)
 
     @classmethod
+    def getEnviron(cls):
+        """ Base environment for launching external programs - starts from the current
+        process environment; tool-specific additions (FRODOCK/ADFRSUITE/VINA/...) are
+        layered on top via runProgram's extraEnvDict, not here. """
+        return pwutils.Environ(os.environ)
+
+    @classmethod
     def runProgram(cls, program, args=None, extraEnvDict=None, cwd=None):
         """ Internal shortcut function to launch an external program (Rosetta or, e.g.,
         FRODOCK). Not tool-specific: only builds the environment and launches the process. """
