@@ -26,6 +26,7 @@
 # **************************************************************************
 
 import os
+import subprocess
 
 import pyworkflow.utils as pwutils
 from scipion.install.funcs import InstallHelper
@@ -221,25 +222,72 @@ class Plugin(pwchemPlugin):
                 "installation (e.g. in scipion.conf or as a shell environment variable).")
         return home
 
-    @classmethod
-    def getFrodockProgram(cls, progName):
-        """ Return the FRODOCK binary that will be used, trying the intel build first and
-        falling back to the gcc build (FRODOCK ships both, e.g. frodockgrid/frodockgrid_gcc,
-        and only one is guaranteed to work on a given machine). """
-        home = cls._requireToolHome(FRODOCK_DIC)
+    # The 4 programs PROTAC-Model's own utils/frodock.py resolves, each shipped as an
+    # intel/gcc build pair ('<name>' / '<name>_gcc').
+    FRODOCK_BINARIES = ['frodockgrid', 'frodock', 'frodockcluster', 'frodockview']
 
-        # The two candidate paths, same convention as FRODOCK's own <name>/<name>_gcc pair.
-        intel = os.path.join(home, 'bin', progName)
-        gcc = os.path.join(home, 'bin', f'{progName}_gcc')
-        if os.path.exists(intel):
-            return intel
-        elif os.path.exists(gcc):
-            return gcc
-        else:
-            # Fail loudly with both checked paths, instead of the original PROTAC-Model
-            # script's print() + sys.exit() (which would kill the whole Scipion process).
-            raise FileNotFoundError(
-                f'{progName} not found under FRODOCK_HOME/bin ({home}). Checked {intel} and {gcc}.')
+    @classmethod
+    def _binaryLoads(cls, path):
+        """ True if the ELF binary at path exists and has every shared-library dependency
+        resolved. Existence alone isn't enough: FRODOCK's intel build can be present but
+        fail at runtime because the Intel MKL runtime it needs isn't installed - `ldd`
+        reports that as a 'not found' line instead of failing to run.
+        Shells out to the system's own `ldd` directly, unlike the rest of this plugin
+        (which always calls external tools via getProgram()/runProgram()/
+        runCondaScript()) - this is a one-off build-time introspection of a binary that
+        isn't itself a managed dependency, not a pipeline step, so that convention
+        doesn't apply here. """
+        if not os.path.exists(path):
+            return False
+        result = subprocess.run(['ldd', path], capture_output=True, text=True)
+        return 'not found' not in result.stdout.lower()
+
+    @classmethod
+    def prepareFrodockBinDir(cls, targetDir):
+        """ Build a `targetDir/bin/` shim with one symlink per FRODOCK_BINARIES entry
+        (unsuffixed name, e.g. 'frodock'), each pointing at whichever real build (intel or
+        gcc) actually loads on this machine - preferring intel where it works (typically
+        faster), falling back to gcc otherwise.
+        This exists because PROTAC-Model's own fallback (utils/frodock.py) only checks
+        that the intel build's *file* exists, not that it loads, so on a machine with the
+        intel binary present but its MKL dependency missing, that fallback never fires.
+        Pointing FRODOCK (see getProtacModelEnviron) at this shim instead of the real
+        FRODOCK_HOME makes PROTAC-Model's own existence check see only the working build,
+        without touching any of its resolution logic. Returns targetDir. """
+        home = cls._requireToolHome(FRODOCK_DIC)
+        binDir = os.path.join(targetDir, 'bin')
+        os.makedirs(binDir, exist_ok=True)
+
+        for name in cls.FRODOCK_BINARIES:
+            intel = os.path.join(home, 'bin', name)
+            gcc = os.path.join(home, 'bin', f'{name}_gcc')
+            if cls._binaryLoads(intel):
+                chosen = intel
+            # Both candidates get the same ldd check - a gcc build that merely exists as
+            # a file but is itself missing some shared dependency (incompatible glibc,
+            # a missing system library...) would otherwise reproduce the exact bug this
+            # shim exists to fix, just shifted from the intel binary to the gcc one.
+            elif cls._binaryLoads(gcc):
+                chosen = gcc
+            else:
+                raise FileNotFoundError(
+                    f'Neither {intel} nor {gcc} is usable (checked with ldd).')
+            link = os.path.join(binDir, name)
+            if os.path.lexists(link):
+                os.remove(link)
+            os.symlink(os.path.abspath(chosen), link)
+
+        # Hard requirement, not a defensive extra: run_protac_model.py::runFrodock() does
+        # shutil.copy(os.environ['FRODOCK'] + '/bin/soap.bin', ...) before calling
+        # fro.frodock(), and FRODOCK now points at this shim in every phase - without this
+        # symlink that copy raises FileNotFoundError and the pipeline never gets started.
+        soapSrc = os.path.join(home, 'bin', 'soap.bin')
+        soapLink = os.path.join(binDir, 'soap.bin')
+        if os.path.lexists(soapLink):
+            os.remove(soapLink)
+        os.symlink(os.path.abspath(soapSrc), soapLink)
+
+        return targetDir
 
     @classmethod
     def getADFRSuiteProgram(cls, progName):
@@ -309,7 +357,7 @@ class Plugin(pwchemPlugin):
         return path
 
     @classmethod
-    def getProtacModelEnviron(cls):
+    def getProtacModelEnviron(cls, frodockHome=None):
         """ PROTAC-Model's own utils/*.py modules read these bare names (no _HOME suffix)
         from os.environ at import time - this translates our *_HOME variables into that
         convention in one place, for use as runCondaScript()'s extraEnvDict. ROSETTA is
@@ -317,14 +365,18 @@ class Plugin(pwchemPlugin):
         by our driver script at module load for every phase, so ROSETTA must resolve even
         for a frodock-only run. Unlike the other five, ROSETTA_HOME is owned by the
         scipion-chem-rosetta plugin (a real dependency, see requirements.txt), so it's
-        resolved via RosettaPlugin.getVar() instead of our own _requireToolHome(). """
+        resolved via RosettaPlugin.getVar() instead of our own _requireToolHome().
+        frodockHome: pass the shim built by prepareFrodockBinDir() so PROTAC-Model only
+        ever sees working FRODOCK binaries; defaults to the raw FRODOCK_HOME (no intel/gcc
+        vetting) when omitted, e.g. from _validate(), which only needs to confirm the var
+        is configured, not build the shim. """
         rosettaHome = RosettaPlugin.getVar(ROSETTA_DIC['home'])
         if rosettaHome is None:
             raise FileNotFoundError(
                 f"{ROSETTA_DIC['home']} is not set. Point it to your Rosetta "
                 "installation (e.g. in scipion.conf or as a shell environment variable).")
         return {
-            'FRODOCK': cls._requireToolHome(FRODOCK_DIC),
+            'FRODOCK': frodockHome or cls._requireToolHome(FRODOCK_DIC),
             'ADFRSUITE': cls._requireToolHome(ADFRSUITE_DIC),
             'VINA': cls._requireToolHome(VINA_DIC),
             'VOROMQA': cls._requireToolHome(VOROMQA_DIC),
