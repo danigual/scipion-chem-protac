@@ -158,6 +158,12 @@ class ProtPROTACModel(EMProtocol):
         cleanPDB(self.inputTarget.get().getFileName(), self._getTargetFile(),
                 waters=True, hetatm=False)
 
+        # Built once here, reused by frodockStep/filterPosesStep/refineStep (see
+        # _getFrodockBinDir): picks whichever FRODOCK build (intel/gcc) actually loads on
+        # this machine, since PROTAC-Model's own fallback only checks the intel build's
+        # file exists, not that it runs (see Plugin.prepareFrodockBinDir).
+        Plugin.prepareFrodockBinDir(self._getFrodockBinDir())
+
     def frodockStep(self):
         """ Runs FRODOCK global docking by launching run_protac_model.py --phase frodock,
         which stages its inputs (chain renaming, protac.smi, optional E3 ligand SDFs) and
@@ -190,7 +196,9 @@ class ProtPROTACModel(EMProtocol):
 
         Plugin.runCondaScript(Plugin.getPluginScript('run_protac_model.py'), args,
                               PROTAC_MODEL_PYTHON_DIC,
-                              extraEnvDict=Plugin.getProtacModelEnviron(), cwd=frodockDir)
+                              extraEnvDict=Plugin.getProtacModelEnviron(
+                                  frodockHome=self._getFrodockBinDir()),
+                              cwd=frodockDir)
 
     def filterPosesStep(self):
         """ Filters the FRODOCK poses by compatibility with the PROTAC/warhead geometry,
@@ -205,7 +213,8 @@ class ProtPROTACModel(EMProtocol):
 
         Plugin.runCondaScript(Plugin.getPluginScript('run_protac_model.py'), args,
                               PROTAC_MODEL_PYTHON_DIC,
-                              extraEnvDict=Plugin.getProtacModelEnviron(),
+                              extraEnvDict=Plugin.getProtacModelEnviron(
+                                  frodockHome=self._getFrodockBinDir()),
                               cwd=self._getExtraPath('frodock'))
 
     def refineStep(self):
@@ -225,7 +234,9 @@ class ProtPROTACModel(EMProtocol):
 
         Plugin.runCondaScript(Plugin.getPluginScript('run_protac_model.py'), args,
                               PROTAC_MODEL_PYTHON_DIC,
-                              extraEnvDict=Plugin.getProtacModelEnviron(), cwd=rosettaDir)
+                              extraEnvDict=Plugin.getProtacModelEnviron(
+                                  frodockHome=self._getFrodockBinDir()),
+                              cwd=rosettaDir)
 
     def createOutputStep(self):
         """ Collects the final (filtered, optionally refined) ternary complex models into
@@ -326,6 +337,12 @@ class ProtPROTACModel(EMProtocol):
         """ Cleaned target PDB written by convertInputStep. Same recompute-not-cache
         reasoning as _getReceptorFile. """
         return self._getExtraPath('target.pdb')
+
+    def _getFrodockBinDir(self):
+        """ Directory holding the FRODOCK binary shim built by convertInputStep (see
+        Plugin.prepareFrodockBinDir). Same recompute-not-cache reasoning as
+        _getReceptorFile/_getTargetFile. """
+        return self._getExtraPath('frodock_bin')
 
     def _getLigLocateNum(self):
         """ 2 when both E3 ligand conformers are given (ambiguous anchoring orientation,
