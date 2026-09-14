@@ -48,6 +48,10 @@ def runFrodock(args):
         shutil.copy(args.e3lig1, 'rec_lig_1.sdf')
         shutil.copy(args.e3lig2, 'rec_lig_2.sdf')
 
+    # Fix #6: fro.frodock() shells out to 'frodock' without -s/--soap, so it looks for
+    # soap.bin in cwd - FRODOCK ships it under bin/, not cwd, and errors out if missing.
+    shutil.copy(os.path.join(os.environ['FRODOCK'], 'bin', 'soap.bin'), 'soap.bin')
+
     # Fix #4: frodock() ends with 'frodockview ... >> frodock_score.txt' (append).
     _removeIfExists('frodock_score.txt')
 
