@@ -175,8 +175,16 @@ class ProtPROTACModel(EMProtocol):
         frodockDir = self._getExtraPath('frodock')
         os.makedirs(frodockDir, exist_ok=True)
 
-        # Absolute + quoted paths: cwd below is frodockDir (not extraPath), and the
-        # underlying shell command would otherwise split a spaced path into extra tokens.
+        # Absolute + quoted paths. Absolute because _getExtraPath()/_getPath() return
+        # paths relative to the Scipion project directory, while every process launched
+        # below runs with a cwd of our own choosing (frodockDir here, rosettaDir in
+        # refineStep) - a relative path would resolve against the wrong directory inside
+        # the driver. Quoted because the underlying command goes through a shell, which
+        # would otherwise split a spaced path into extra tokens.
+        # This applies to CLI arguments only: paths that travel as environment variables,
+        # as the driver script path, or as cwd are made absolute centrally instead (see
+        # Plugin.getProtacModelEnviron/runCondaScript/runProgram), so they cannot be
+        # forgotten at a call site.
         receptorFile = os.path.abspath(self._getReceptorFile())
         targetFile = os.path.abspath(self._getTargetFile())
         # From the parsed tuple, not the raw form string, so stray whitespace can't split
@@ -341,7 +349,10 @@ class ProtPROTACModel(EMProtocol):
     def _getFrodockBinDir(self):
         """ Directory holding the FRODOCK binary shim built by convertInputStep (see
         Plugin.prepareFrodockBinDir). Same recompute-not-cache reasoning as
-        _getReceptorFile/_getTargetFile. """
+        _getReceptorFile/_getTargetFile.
+        Project-relative, like the two above: it is only ever consumed either in-process
+        (prepareFrodockBinDir, which runs from the project directory) or as the FRODOCK
+        environment variable, which Plugin.getProtacModelEnviron() makes absolute. """
         return self._getExtraPath('frodock_bin')
 
     def _getLigLocateNum(self):

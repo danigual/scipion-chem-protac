@@ -36,6 +36,11 @@ from rosetta import Plugin as RosettaPlugin, ROSETTA_DIC
 
 from .constants import *
 
+# Resolved once, at import time, rather than inside getPluginScript(): __file__ is only
+# guaranteed to be meaningful relative to the cwd Python was started from, and the
+# protocol's steps deliberately run external processes from other directories.
+_PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+
 _version_ = "0.1"
 # FRODOCK is a separate external tool (not Rosetta), used by the PROTAC-Model pipeline
 # for the initial global protein-protein docking step. No 'version' key: we don't pin/
@@ -49,7 +54,14 @@ FRODOCK_DIC = {'name': 'frodock', 'home': 'FRODOCK_HOME'}
 # so they get real defineBinaries() support via InstallHelper - 'version' is needed now
 # (InstallHelper/getEnvName use it to name the conda env / package folder).
 ADFRSUITE_DIC = {'name': 'adfrsuite', 'version': '1.0', 'home': 'ADFRSUITE_HOME'}
-VINA_DIC = {'name': 'vina', 'version': '1.2.7', 'home': 'VINA_HOME'}
+# Pinned to 1.2.2, not latest: PROTAC-Model's own preprocess.py::obenergy_vina() calls
+# 'vina --score_only' with no grid box at all - fine on the Vina version PROTAC-Model
+# was written against (README points at the pre-1.2 vina.scripps.edu), but Vina 1.2.3+
+# added a hard check that raises "ligand is outside the grid box" whenever score_only is
+# called without one, which crashes the whole filterPosesStep (unhandled exception inside
+# a multiprocessing.Pool worker). Confirmed root cause and fix against the maintainers'
+# own explanation, https://github.com/ccsb-scripps/AutoDock-Vina/issues/112 (2026-09-14).
+VINA_DIC = {'name': 'vina', 'version': '1.2.2', 'home': 'VINA_HOME'}
 VOROMQA_DIC = {'name': 'voromqa', 'version': '1.29.4816', 'home': 'VOROMQA_HOME'}
 FCC_DIC = {'name': 'fcc', 'version': 'latest', 'home': 'FCC_HOME'}
 
@@ -119,11 +131,15 @@ class Plugin(pwchemPlugin):
     def addVinaPackage(cls, env, default=True):
         """ Installs the Vina CLI binary via conda-forge - PROTAC-Model shells out to
         $VINA/bin/vina, so we need the compiled binary, not just the 'vina' PyPI package
-        (Python bindings only). """
+        (Python bindings only). pythonVersion pinned to 3.10, not 3.11: checked
+        conda-forge's own repodata (2026-09-14) - vina=1.2.2 only ships py37-py310
+        builds, no py311 one, so a 3.11 env would force conda to downgrade the env's own
+        Python to satisfy the vina constraint (or fail outright), not the up-front pin
+        InstallHelper's own naming implies. """
         installer = InstallHelper(VINA_DIC['name'], packageHome=cls.getVar(VINA_DIC['home']),
                                   packageVersion=VINA_DIC['version'])
         installer.getCondaEnvCommand(
-            binaryName=VINA_DIC['name'], binaryVersion=VINA_DIC['version'], pythonVersion='3.11'
+            binaryName=VINA_DIC['name'], binaryVersion=VINA_DIC['version'], pythonVersion='3.10'
         ).addCommand(
             f"{cls.getEnvActivationCommand(VINA_DIC)} && conda install -y -c conda-forge vina={VINA_DIC['version']}",
             targetName=f"{VINA_DIC['name']}_installed"
@@ -283,6 +299,10 @@ class Plugin(pwchemPlugin):
         # fro.frodock(), and FRODOCK now points at this shim in every phase - without this
         # symlink that copy raises FileNotFoundError and the pipeline never gets started.
         soapSrc = os.path.join(home, 'bin', 'soap.bin')
+        if not os.path.exists(soapSrc):
+            # Fail here, not later as a confusing FileNotFoundError inside the Python 2
+            # driver once it tries to copy through a dangling symlink.
+            raise FileNotFoundError(f'{soapSrc} not found under FRODOCK_HOME/bin.')
         soapLink = os.path.join(binDir, 'soap.bin')
         if os.path.lexists(soapLink):
             os.remove(soapLink)
@@ -370,13 +390,22 @@ class Plugin(pwchemPlugin):
         frodockHome: pass the shim built by prepareFrodockBinDir() so PROTAC-Model only
         ever sees working FRODOCK binaries; defaults to the raw FRODOCK_HOME (no intel/gcc
         vetting) when omitted, e.g. from _validate(), which only needs to confirm the var
-        is configured, not build the shim. """
+        is configured, not build the shim.
+        Every value is made absolute before being returned - this is the single place
+        where that normalization happens for environment variables, so no call site has
+        to remember it. It is not cosmetic: the consumers of these variables all run with
+        a cwd of our choosing (extra/frodock/, extra/rosetta/ - see the protocol's steps),
+        never the Scipion project directory that a protocol's _getExtraPath()/_getPath()
+        helpers return their paths relative to, so any relative value handed in here would
+        silently resolve against the wrong directory inside the driver. abspath() is
+        evaluated here, while the calling protocol step still runs from the project
+        directory, so it resolves correctly. """
         rosettaHome = RosettaPlugin.getVar(ROSETTA_DIC['home'])
         if rosettaHome is None:
             raise FileNotFoundError(
                 f"{ROSETTA_DIC['home']} is not set. Point it to your Rosetta "
                 "installation (e.g. in scipion.conf or as a shell environment variable).")
-        return {
+        environ = {
             'FRODOCK': frodockHome or cls._requireToolHome(FRODOCK_DIC),
             'ADFRSUITE': cls._requireToolHome(ADFRSUITE_DIC),
             'VINA': cls._requireToolHome(VINA_DIC),
@@ -386,12 +415,15 @@ class Plugin(pwchemPlugin):
             'ROSETTA': rosettaHome,
             'PROTAC_MODEL_HOME': cls.getProtacModelScript(),
         }
+        return {name: os.path.abspath(path) for name, path in environ.items()}
 
     @classmethod
     def getPluginScript(cls, scriptName):
         """ Path to a script bundled with this plugin itself (protac/scripts/<scriptName>),
-        e.g. run_protac_model.py - mirrors pwchem's Plugin.getScriptsDir(). """
-        return os.path.join(os.path.dirname(__file__), 'scripts', scriptName)
+        e.g. run_protac_model.py - mirrors pwchem's Plugin.getScriptsDir(). Absolute (see
+        _PLUGIN_DIR): the returned path is handed to a process running from some other
+        working directory. """
+        return os.path.join(_PLUGIN_DIR, 'scripts', scriptName)
     @classmethod
     def runCondaScript(cls, scriptPath, args, condaDic, extraEnvDict=None, cwd=None):
         """ Launch a Python script with a conda env activated first, instead of calling
@@ -400,8 +432,11 @@ class Plugin(pwchemPlugin):
         to FCC's clustering scripts as a bare 'python <script>.py' command (see
         PROTAC-Model's own preprocess.py) - that only resolves to the right Python 2.7 if
         this env's bin/ is actually on PATH, which activating it does and launching by
-        absolute interpreter path alone would not. """
-        program = f'{cls.getEnvActivationCommand(condaDic)} && python {scriptPath}'
+        absolute interpreter path alone would not.
+        scriptPath is made absolute (and quoted) here rather than at each call site: cwd
+        below is deliberately not the Scipion project directory, so a project-relative
+        script path would not resolve once the shell has cd'd there. """
+        program = f'{cls.getEnvActivationCommand(condaDic)} && python "{os.path.abspath(scriptPath)}"'
         cls.runProgram(program, args, extraEnvDict=extraEnvDict, cwd=cwd)
 
     @classmethod
@@ -414,8 +449,12 @@ class Plugin(pwchemPlugin):
     @classmethod
     def runProgram(cls, program, args=None, extraEnvDict=None, cwd=None):
         """ Internal shortcut function to launch an external program (Rosetta or, e.g.,
-        FRODOCK). Not tool-specific: only builds the environment and launches the process. """
+        FRODOCK). Not tool-specific: only builds the environment and launches the process.
+        cwd is resolved here, while we are still running from the Scipion project
+        directory: subprocess would resolve a relative cwd the same way, but pinning it
+        now keeps the value that gets logged/reported on failure unambiguous. """
         env = cls.getEnviron()
         if extraEnvDict is not None:
             env.update(extraEnvDict)
-        pwutils.runJob(None, program, args, env=env, cwd=cwd)
+        pwutils.runJob(None, program, args, env=env,
+                       cwd=os.path.abspath(cwd) if cwd else cwd)
