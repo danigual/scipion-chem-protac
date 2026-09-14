@@ -13,7 +13,9 @@
 import argparse
 import functools
 import glob
+import math
 import os
+import re
 import shutil
 import sys
 import traceback
@@ -39,8 +41,10 @@ import utils.rosetta as ros
 # failure, resource contention between Pool workers, a weird conformer geometry... - makes
 # that [0] raise IndexError inside a multiprocessing.Pool worker; pool.map() re-raises it
 # in the parent and the whole step dies, throwing away hours of docking because of one
-# conformer. Pinning the Vina version (see the 2026-09-14 entry in PROTAC_PROGRESS_LOG.txt)
-# removed one systematic cause of that, not the fragility of the pattern itself.
+# conformer. (That command is also wrong in two further, systematic ways against any Vina
+# we can install today - no grid box, and the wrong wording to grep for. Both are handled
+# in the "Vina --score_only" section below, which is why the guard here is now only the
+# last-resort net it was meant to be.)
 #
 # We neither reimplement that logic (see .claude/rules/protac-model-pipeline.md) nor patch
 # the PROTAC-Model checkout on disk (PROTAC_MODEL_HOME may point at a clone this plugin
@@ -54,8 +58,8 @@ import utils.rosetta as ros
 #     'filtering' by qualified name (utils.frodock.filtering), which the worker resolves
 #     against its inherited copy of the module.
 
-_MAX_EMPTY_OUTPUT_WARNINGS = 20
-_emptyOutputWarnings = 0
+_MAX_WARNINGS_PER_KIND = 20
+_warningCounts = {}
 
 # Appended to (one line per failed pose) by the fail-safe filtering() below, read back by
 # _reportPoseFailures(). Lives in the phase's working directory, like everything else the
@@ -69,6 +73,20 @@ def _warn(message):
     workers share this fd, and a single short write to a pipe is not interleaved. """
     sys.stdout.write(message)
     sys.stdout.flush()
+
+
+def _warnCapped(kind, message):
+    """ Capped per kind and per process (each forked worker gets its own counters): when
+    something systematic is broken these fire once per conformer - up to 100 conformers x
+    hundreds of poses - and an uncapped log would be tens of MB. """
+    count = _warningCounts.get(kind, 0) + 1
+    _warningCounts[kind] = count
+    if count > _MAX_WARNINGS_PER_KIND:
+        return
+    if count == _MAX_WARNINGS_PER_KIND:
+        message += ('[protac] WARNING: further "%s" warnings from this process are '
+                    'suppressed.\n' % kind)
+    _warn(message)
 
 
 class _GuardedPipe(object):
@@ -97,9 +115,184 @@ class _GuardedPipe(object):
         return False
 
 
+# --------------------- Vina --score_only: grid box + score parsing ---------------------
+# PROTAC-Model was written against pre-1.2 AutoDock Vina (its README points at the old
+# vina.scripps.edu download), and obenergy_vina() scores each conformer with
+#
+#     $VINA/bin/vina --score_only --receptor <...>.pdbqt --ligand <...>.pdbqt \
+#         | grep Affinity | cut -d" " -f2
+#
+# Two things about that command are broken against every Vina we can actually install
+# today (both verified against ccsb-scripps/AutoDock-Vina, tags v1.2.2 and v1.2.5):
+#
+#   1. No search space. In src/main/main.cpp the score_only branch is
+#          if ((score_only || local_only) && autobox) { ...from ligand... }
+#          else v.compute_vina_maps(center_x, ..., size_z, grid_spacing, force_even_voxels);
+#      and center_x/size_x are plain 'double center_x;' with no initialiser and no
+#      vm.count() check. So without a box Vina silently builds its affinity maps from
+#      uninitialised stack garbage - exactly the "Center: X 1.58101e-322 ..." Daniel saw on
+#      the CNB VM - and either returns a nonsense energy (+2.3e9 kcal/mol, which the
+#      downstream awk '$2<0' filter then discards) or dies in Vina::score() on
+#      m_grid.is_in_grid(m_model) with "The ligand is outside the grid box". Either way no
+#      conformer of any pose ever survives, vina/score_all_top1 is never written, and
+#      filter_frodock() dies much later on IOError: 'vina/score_all_top1'. This is not a
+#      version regression we can pin our way out of (1.2.2 was already tried): the box is
+#      simply required, and this build has no --autobox either.
+#   2. No "Affinity" line to grep. Vina::show_score() in src/lib/vina.cpp prints
+#      "Estimated Free Energy of Binding   : <x> (kcal/mol) [=(1)+(2)+(3)+(4)]"; the
+#      "Affinity: <x> (kcal/mol)" line the pipeline greps for is the pre-1.2 wording. So
+#      even with a correct box the grep|cut pipeline would yield nothing.
+#
+# Both are fixed here, inside the popen() shim we already own, by taking over the whole
+# command when it is recognisably this one: we compute a real box from the ligand PDBQT,
+# re-run Vina with it, and hand back the single number the original grep|cut pipeline was
+# meant to produce. No PROTAC-Model logic is reimplemented - obenergy_vina() still decides
+# what to do with the score.
+
+# Padding added around the ligand on every face, in Angstrom. 4.0 is Vina's own --autobox
+# buffer ('double buffer_size = 4;' in src/main/main.cpp), i.e. what Vina considers enough
+# clearance to score a ligand. Kept at exactly that and no more on purpose: Vina builds
+# real affinity maps for --score_only, so map construction cost grows with the box volume
+# and this runs once per conformer (up to 100) of every pose.
+_VINA_BOX_PADDING = 4.0
+
+# What we hand back in place of a score we could not obtain. See _GuardedOs' docstring for
+# why 0 (rather than no line at all) is the safe stand-in here.
+_ZERO_SCORE = '0\n'
+
+# The --ligand argument of the command being intercepted. '\S+' stops at the space before
+# the '|' of the grep pipeline, so it captures just the path.
+_VINA_LIGAND_RE = re.compile(r'--ligand(?:\s+|=)(\S+)')
+
+# Accepts both wordings of the score line so this keeps working if PROTAC_MODEL's original
+# pre-1.2 Vina is ever the one installed:
+#   "Affinity: -8.51139 (kcal/mol)"                                     (Vina 1.1.x)
+#   "Estimated Free Energy of Binding   : -8.512 (kcal/mol) [=(1)+...]" (Vina 1.2.x)
+# Anchored at the start of a line so the "(1) Final Intermolecular Energy : ..." breakdown
+# lines 1.2.x prints right after it can never match.
+_VINA_SCORE_RE = re.compile(
+    r'^[ \t]*(?:Affinity|Estimated Free Energy of Binding)[ \t]*:[ \t]*'
+    r'([-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)',
+    re.MULTILINE)
+
+
+def _readPdbqtCoords(pdbqtPath):
+    """ Every (x, y, z) in a PDBQT file, as float triples.
+
+    Column ranges are not guessed: they are the ones Vina's own reader uses in
+    src/lib/parse_pdbqt.cpp,
+
+        vec coords(checked_convert_substring<fl>(str, 31, 38, "Coordinate"),
+                   checked_convert_substring<fl>(str, 39, 46, "Coordinate"),
+                   checked_convert_substring<fl>(str, 47, 54, "Coordinate"));
+
+    which are 1-indexed and inclusive, hence the [30:38] / [38:46] / [46:54] slices below -
+    the same ones PROTAC-Model itself uses on PDB files (see preprocess.lig_around_residue).
+    PDBQT only adds the partial charge (cols 69-76) and AutoDock atom type (cols 78-79)
+    after the B-factor, so the coordinate columns are the plain PDB ones.
+
+    Everything that is not an ATOM/HETATM record (REMARK, ROOT/BRANCH/TORSDOF, MODEL...)
+    carries no coordinates and is skipped, as are records too short or malformed to parse -
+    a truncated line must not silently contribute a 0.0 and blow the box up towards the
+    origin. """
+    coords = []
+    with open(pdbqtPath) as pdbqtFile:
+        for line in pdbqtFile:
+            if not (line.startswith('ATOM') or line.startswith('HETATM')):
+                continue
+            try:
+                coords.append((float(line[30:38]), float(line[38:46]), float(line[46:54])))
+            except ValueError:
+                continue
+    return coords
+
+
+def _vinaBoxFlags(ligandPath):
+    """ '--center_x ... --size_z ...' for a box that contains ligandPath with
+    _VINA_BOX_PADDING of clearance on every face, or None if the file cannot be read or
+    holds no usable atom.
+
+    The size formula mirrors Vina::grid_dimensions_from_ligand() (src/lib/vina.cpp),
+    'std::ceil((max_distance[j] + buffer_size) * 2)', with the box centred on the ligand's
+    bounding box instead of on its centroid: that is the same guarantee (>= padding of
+    clearance on every face) with a strictly smaller box, since the centroid can sit much
+    closer to one face than the other for an elongated molecule - and a PROTAC is about as
+    elongated as small molecules get. """
+    try:
+        coords = _readPdbqtCoords(ligandPath)
+    except (IOError, OSError):
+        return None
+    if not coords:
+        return None
+
+    centers, sizes = [], []
+    for axis in range(3):
+        values = [coord[axis] for coord in coords]
+        low, high = min(values), max(values)
+        centers.append((low + high) / 2.0)
+        sizes.append(math.ceil((high - low) / 2.0 + _VINA_BOX_PADDING) * 2.0)
+    return ('--center_x %.3f --center_y %.3f --center_z %.3f '
+            '--size_x %.3f --size_y %.3f --size_z %.3f'
+            % (centers[0], centers[1], centers[2], sizes[0], sizes[1], sizes[2]))
+
+
+def _isVinaScoreOnly(cmd):
+    """ True only for obenergy_vina()'s Vina call. preprocess.py's other popen() - an
+    'awk ... | wc -l' over obenergy_filter_<pose> - has no --score_only and must keep going
+    through the generic path untouched.
+
+    A command that already carries a search space (--center_x), precomputed maps (--maps)
+    or --autobox is left alone too, so this stays a no-op if PROTAC-Model ever fixes its
+    own call. """
+    if '--score_only' not in cmd:
+        return False
+    return not ('--center_x' in cmd or '--maps' in cmd or '--autobox' in cmd)
+
+
+def _runVinaScoreOnly(realOs, cmd, args, kwargs):
+    """ Runs obenergy_vina()'s Vina call with a real grid box and returns exactly what its
+    'grep Affinity | cut -d" " -f2' pipeline was supposed to return: one line holding the
+    score. Never returns empty output - '0' on any failure, which obenergy_vina() handles
+    as "this conformer scored nothing" (see _GuardedOs' docstring).
+
+    Only the part of cmd before the first '|' is re-run: that is the Vina invocation, and
+    the grep|cut tail is replaced by _VINA_SCORE_RE. Splitting on '|' is safe for this
+    specific command - the only quoting in it is cut's -d" ", which contains no pipe. """
+    ligandMatch = _VINA_LIGAND_RE.search(cmd)
+    if ligandMatch is None or not ligandMatch.group(1).endswith('.pdbqt'):
+        return None
+    ligandPath = ligandMatch.group(1)
+
+    boxFlags = _vinaBoxFlags(ligandPath)
+    if boxFlags is None:
+        _warnCapped('vina-no-box',
+                    '[protac] WARNING: cannot read ligand coordinates from %s, skipping '
+                    'this conformer (scoring it as 0).\n' % ligandPath)
+        return _ZERO_SCORE
+
+    # 2>&1 so a Vina error message ends up in the text we report below instead of being
+    # scattered across Scipion's log out of order.
+    vinaCmd = '%s %s 2>&1' % (cmd.split('|', 1)[0].strip(), boxFlags)
+    pipe = realOs.popen(vinaCmd, *args, **kwargs)
+    try:
+        output = pipe.read()
+    finally:
+        pipe.close()
+
+    scoreMatch = _VINA_SCORE_RE.search(output)
+    if scoreMatch is None:
+        _warnCapped('vina-no-score',
+                    '[protac] WARNING: no score in the output of "%s", scoring this '
+                    'conformer as 0. Vina said:\n%s\n' % (vinaCmd, output.strip()))
+        return _ZERO_SCORE
+    return '%s\n' % scoreMatch.group(1)
+
+
 class _GuardedOs(object):
     """ Drop-in replacement for the 'os' module as seen from utils/preprocess.py. Every
-    attribute is the real one except popen(), which never returns empty output.
+    attribute is the real one except popen(), which (a) gives obenergy_vina()'s Vina call
+    the search space it never passes and reads the score back itself (see the block comment
+    above), and (b) never returns empty output.
 
     Why '0' is the right stand-in value for both of preprocess.py's popen call sites:
       - the vina score (its line 37): obenergy_vina writes it to score_<pose> and later
@@ -113,7 +306,7 @@ class _GuardedOs(object):
     the original code already handles (it is what happens when conetnt_score stays empty),
     instead of an IndexError that kills every pose being processed in parallel. """
 
-    _FALLBACK = '0\n'
+    _FALLBACK = _ZERO_SCORE
 
     def __init__(self, realOs):
         self._os = realOs
@@ -122,6 +315,13 @@ class _GuardedOs(object):
         return getattr(self._os, name)
 
     def popen(self, cmd, *args, **kwargs):
+        if _isVinaScoreOnly(cmd):
+            # None means the command was not shaped the way we expect after all; fall
+            # through to the generic path rather than guessing.
+            content = _runVinaScoreOnly(self._os, cmd, args, kwargs)
+            if content is not None:
+                return _GuardedPipe(content)
+
         pipe = self._os.popen(cmd, *args, **kwargs)
         try:
             content = pipe.read()
@@ -129,24 +329,11 @@ class _GuardedOs(object):
             pipe.close()
         lines = content.splitlines()
         if not lines or not lines[0].strip():
-            _warnEmptyOutput(cmd)
+            _warnCapped('empty-output',
+                        '[protac] WARNING: no output from shell command, using 0 instead: '
+                        '%s\n' % cmd)
             content = self._FALLBACK
         return _GuardedPipe(content)
-
-
-def _warnEmptyOutput(cmd):
-    """ Capped per process (each forked worker gets its own counter): if something
-    systematic is broken - e.g. a Vina build that refuses to --score_only without a grid
-    box - this fires once per conformer, and an uncapped log would be tens of MB. """
-    global _emptyOutputWarnings
-    _emptyOutputWarnings += 1
-    if _emptyOutputWarnings > _MAX_EMPTY_OUTPUT_WARNINGS:
-        return
-    message = '[protac] WARNING: no output from shell command, using 0 instead: %s\n' % cmd
-    if _emptyOutputWarnings == _MAX_EMPTY_OUTPUT_WARNINGS:
-        message += ('[protac] WARNING: further empty-output warnings from this process '
-                    'are suppressed.\n')
-    _warn(message)
 
 
 def _makeFailSafeFiltering(module, poseIndex):

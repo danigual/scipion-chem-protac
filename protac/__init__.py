@@ -54,13 +54,14 @@ FRODOCK_DIC = {'name': 'frodock', 'home': 'FRODOCK_HOME'}
 # so they get real defineBinaries() support via InstallHelper - 'version' is needed now
 # (InstallHelper/getEnvName use it to name the conda env / package folder).
 ADFRSUITE_DIC = {'name': 'adfrsuite', 'version': '1.0', 'home': 'ADFRSUITE_HOME'}
-# Pinned to 1.2.2, not latest: PROTAC-Model's own preprocess.py::obenergy_vina() calls
-# 'vina --score_only' with no grid box at all - fine on the Vina version PROTAC-Model
-# was written against (README points at the pre-1.2 vina.scripps.edu), but Vina 1.2.3+
-# added a hard check that raises "ligand is outside the grid box" whenever score_only is
-# called without one, which crashes the whole filterPosesStep (unhandled exception inside
-# a multiprocessing.Pool worker). Confirmed root cause and fix against the maintainers'
-# own explanation, https://github.com/ccsb-scripps/AutoDock-Vina/issues/112 (2026-09-14).
+# Pinned to 1.2.2, not latest, purely for reproducibility - it is the build this pipeline
+# has actually been run against. It is NOT a workaround for anything: PROTAC-Model's own
+# preprocess.py::obenergy_vina() calls 'vina --score_only' with no grid box at all, which
+# no 1.2.x build can score correctly (main.cpp passes uninitialised center_x/size_x
+# straight to compute_vina_maps()), and its 'grep Affinity' no longer matches 1.2.x's
+# "Estimated Free Energy of Binding" wording either. Both are fixed at runtime by
+# protac/scripts/run_protac_model.py, which supplies a real box computed from the ligand
+# PDBQT and parses the score itself - see the "Vina --score_only" block comment there.
 VINA_DIC = {'name': 'vina', 'version': '1.2.2', 'home': 'VINA_HOME'}
 VOROMQA_DIC = {'name': 'voromqa', 'version': '1.29.4816', 'home': 'VOROMQA_HOME'}
 FCC_DIC = {'name': 'fcc', 'version': 'latest', 'home': 'FCC_HOME'}
