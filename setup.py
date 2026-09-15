@@ -36,7 +36,6 @@ setup(
     install_requires=[requirements],
     entry_points={'pyworkflow.plugin': 'protac = protac'},
     package_data={  # Optional
-       # XXX: no protac_icon.png yet (see protac/__init__.py) - add it here once it exists.
        'protac': ['protocols.conf'],
     }
 )
