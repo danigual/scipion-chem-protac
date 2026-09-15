@@ -36,39 +36,29 @@ from rosetta import Plugin as RosettaPlugin, ROSETTA_DIC
 
 from .constants import *
 
-# Resolved once, at import time, rather than inside getPluginScript(): __file__ is only
-# guaranteed to be meaningful relative to the cwd Python was started from, and the
-# protocol's steps deliberately run external processes from other directories.
+# Computed once at import, before any chdir() the protocol's steps do later,
+# abspath(__file__) could resolve wrong if computed after the cwd has moved.
 _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 
 _version_ = "0.1"
-# FRODOCK is a separate external tool (not Rosetta), used by the PROTAC-Model pipeline
-# for the initial global protein-protein docking step. No 'version' key: we don't pin/
-# validate a specific FRODOCK version, only that FRODOCK_HOME points somewhere real.
+# FRODOCK is a separate external tool, used by the PROTAC-Model pipeline
+# for the initial global protein-protein docking step.
 FRODOCK_DIC = {'name': 'frodock', 'home': 'FRODOCK_HOME'}
 
-# The remaining four are used later, by filterPosesStep (PROTAC-Model's filter_frodock()):
-# reduce/obabel/obenergy/prepare_receptor/prepare_ligand (ADFRsuite), vina (Vina), the
-# voronota-voromqa binary (Voromqa), and the FCC clustering scripts. Unlike FRODOCK/Rosetta
-# (license-gated downloads, see below), none of these four require a license click-through,
-# so they get real defineBinaries() support via InstallHelper - 'version' is needed now
-# (InstallHelper/getEnvName use it to name the conda env / package folder).
+# Used later by filterPosesStep (PROTAC-Model's filter_frodock()): ADFRsuite binaries,
+# Vina, Voromqa, and FCC's clustering scripts. No license click-through needed (unlike
+# FRODOCK/Rosetta below), so these get real defineBinaries() via InstallHelper.
 ADFRSUITE_DIC = {'name': 'adfrsuite', 'version': '1.0', 'home': 'ADFRSUITE_HOME'}
-# Pinned to 1.2.2, not latest, purely for reproducibility - it is the build this pipeline
-# has actually been run against. It is NOT a workaround for anything: PROTAC-Model's own
-# preprocess.py::obenergy_vina() calls 'vina --score_only' with no grid box at all, which
-# no 1.2.x build can score correctly (main.cpp passes uninitialised center_x/size_x
-# straight to compute_vina_maps()), and its 'grep Affinity' no longer matches 1.2.x's
-# "Estimated Free Energy of Binding" wording either. Both are fixed at runtime by
-# protac/scripts/run_protac_model.py, which supplies a real box computed from the ligand
-# PDBQT and parses the score itself - see the "Vina --score_only" block comment there.
+# Pinned for reproducibility, not as a workaround. The actual Vina bug (uninitialised
+# grid box in --score_only, changed "Affinity" wording) is patched at runtime in
+# run_protac_model.py, not here.
 VINA_DIC = {'name': 'vina', 'version': '1.2.2', 'home': 'VINA_HOME'}
 VOROMQA_DIC = {'name': 'voromqa', 'version': '1.29.4816', 'home': 'VOROMQA_HOME'}
 FCC_DIC = {'name': 'fcc', 'version': 'latest', 'home': 'FCC_HOME'}
 
-# PROTAC-Model's own code (main.py, utils/*) is called directly, not reimplemented (see
-# protocol_protac_model.py/protac/scripts/run_*.py). Its code is genuine Python 2, so
-# PROTAC_MODEL_PYTHON_HOME is a dedicated Python 2.7+rdkit conda env, never scipion3's own.
+# PROTAC-Model's own code (main.py, utils/*) is called directly, not reimplemented
+# Its code is genuine Python 2, so PROTAC_MODEL_PYTHON_HOME is a dedicated 
+# Python 2.7+rdkit conda env, never scipion3's own.
 PROTAC_MODEL_DIC = {'name': 'protac-model', 'version': 'latest', 'home': 'PROTAC_MODEL_HOME'}
 PROTAC_MODEL_PYTHON_DIC = {'name': 'protac-model-python', 'version': '2.7',
                            'home': 'PROTAC_MODEL_PYTHON_HOME'}
@@ -80,12 +70,11 @@ class Plugin(pwchemPlugin):
     @classmethod
     def _defineVariables(cls):
         """ Return and write a variable in the config file. """
-        # FRODOCK_HOME stays manual (license click-through, see FRODOCK_DIC above) - None
-        # until the user points it at their own download.
+        # FRODOCK_HOME stays manual.The user points it at their own download.
         cls._defineVar(FRODOCK_DIC['home'], None)
 
-        # The five tools below have no license gate - _defineEmVar wires each home to
-        # wherever defineBinaries()/InstallHelper installs it.
+        # The five tools below have no license gate, _defineEmVar wires each home
+        # to wherever defineBinaries()/InstallHelper installs it.
         cls._defineEmVar(ADFRSUITE_DIC['home'], cls.getEnvName(ADFRSUITE_DIC))
         cls._defineEmVar(VINA_DIC['home'], cls.getEnvName(VINA_DIC))
         cls._defineEmVar(VOROMQA_DIC['home'], cls.getEnvName(VOROMQA_DIC))
@@ -95,8 +84,8 @@ class Plugin(pwchemPlugin):
 
     @classmethod
     def defineBinaries(cls, env):
-        # FRODOCK/Rosetta excluded on purpose (manual, license-gated - see FRODOCK_DIC
-        # above; ROSETTA_HOME is scipion-chem-rosetta's own responsibility).
+        # FRODOCK/Rosetta excluded on purpose (manual,ROSETTA_HOME 
+        # is scipion-chem-rosetta's own responsibility).
         cls.addADFRSuitePackage(env)
         cls.addVinaPackage(env)
         cls.addVoromqaPackage(env)
@@ -107,21 +96,17 @@ class Plugin(pwchemPlugin):
     # ---------------------------- Package installers (InstallHelper) -------------
     @classmethod
     def addADFRSuitePackage(cls, env, default=True):
-        """ Downloads and unpacks ADFRsuite (no license click-through found on
-        ccsb.scripps.edu for the non-commercial installer, unlike FRODOCK).
-        URL and install.sh flags confirmed against ccsb.scripps.edu/adfr/downloads/'s own
-        "INSTALLING FROM TARBALL" instructions: -d is the destination folder,
+        """ Downloads and unpacks ADFRsuite. Instructions: -d is the destination folder,
         -c 0/1 picks .pyc/.pyo compilation - no interactive prompt is documented, so no
-        'echo "Y" |' is needed.
-        Known issue (same page): on Linux with an older GCC, _openbabel.so can fail with
+        'echo "Y" |' is needed. Known issue: on Linux with an older GCC, _openbabel.so can fail with
         "GLIBCXX_3.4.15' not found" - fix is renaming <installDir>/lib/libstdc++.so.6.orig
         to libstdc++.so.6. """
         installer = InstallHelper(ADFRSUITE_DIC['name'], packageHome=cls.getVar(ADFRSUITE_DIC['home']),
                                   packageVersion=ADFRSUITE_DIC['version'])
         installer.addCommand(
-            # install.sh needs cwd inside the extracted folder (doesn't cd there itself) -
-            # running it from outside breaks the
-            # sibling tarball lookup (Python2.7.tar.gz etc.) one level up.
+            # install.sh needs cwd inside the extracted folder (doesn't cd there itself)
+            # running it from outside broke the sibling tarball lookup 
+            # (Python2.7.tar.gz etc.) one level up.
             'wget -q https://ccsb.scripps.edu/adfr/download/1038/ -O adfrsuite.tar.gz && '
             'tar -xzf adfrsuite.tar.gz && '
             '(cd ADFRsuite_x86_64Linux_1.0 && ./install.sh -d .. -c 0)',
@@ -130,11 +115,11 @@ class Plugin(pwchemPlugin):
 
     @classmethod
     def addVinaPackage(cls, env, default=True):
-        """ Installs the Vina CLI binary via conda-forge - PROTAC-Model shells out to
+        """ Installs the Vina CLI binary via conda-forge. PROTAC-Model shells out to
         $VINA/bin/vina, so we need the compiled binary, not just the 'vina' PyPI package
         (Python bindings only). pythonVersion pinned to 3.10, not 3.11: checked
-        conda-forge's own repodata - vina=1.2.2 only ships py37-py310
-        builds, no py311 one, so a 3.11 env would force conda to downgrade the env's own
+        conda-forge's own repodata. vina=1.2.2 only ships py37-py310 builds, 
+        no py311 one, so a 3.11 env would force conda to downgrade the env's own
         Python to satisfy the vina constraint (or fail outright), not the up-front pin
         InstallHelper's own naming implies. """
         installer = InstallHelper(VINA_DIC['name'], packageHome=cls.getVar(VINA_DIC['home']),
@@ -145,9 +130,8 @@ class Plugin(pwchemPlugin):
             f"{cls.getEnvActivationCommand(VINA_DIC)} && conda install -y -c conda-forge vina={VINA_DIC['version']}",
             targetName=f"{VINA_DIC['name']}_installed"
         ).addCommand(
-            # getCondaEnvCommand installs under conda's own envs dir, not packageHome -
-            # without this symlink getVinaProgram() would find an empty folder. Same fix
-            # pwchem uses for MGLTools (pwchem/__init__.py, addMGLToolsPackage).
+            # getCondaEnvCommand installs under conda's own envs dir, not packageHome
+            # without this symlink getVinaProgram() would find an empty folder.
             f"{cls.getEnvActivationCommand(VINA_DIC)} && rm -rf {cls.getVar(VINA_DIC['home'])} && "
             f"ln -s $CONDA_PREFIX {cls.getVar(VINA_DIC['home'])}",
             targetName=f"{VINA_DIC['name']}_symlinked")
@@ -177,25 +161,20 @@ class Plugin(pwchemPlugin):
         only ever invoked from inside PROTAC-Model's own code (pre.cluster()), which
         already runs under PROTAC_MODEL_PYTHON_HOME and passes that interpreter down. """
         installer = InstallHelper(FCC_DIC['name'], packageHome=cls.getVar(FCC_DIC['home']),
-                                  packageVersion=FCC_DIC['version'])
-        # binaryFolderName=FCC_DIC['name'] (not '.'): getCloneCommand's 'cd <packageHome>
-        # && git clone <url> .' only works if packageHome already exists and is empty -
-        # pwchem always clones into a named subfolder instead (see e.g. addShapeItPackage).
+                                packageVersion=FCC_DIC['version'])
         installer.getCloneCommand(
             'https://github.com/haddocking/fcc.git', binaryFolderName=FCC_DIC['name'],
             targeName=f"{FCC_DIC['name']}_cloned"
-        # XXX FCC's README warns the Makefile may need manual edits - untested.
+        # FCC's README warns the Makefile may need manual edits, untested.
         ).addCommand(f"cd {FCC_DIC['name']}/src && make", targetName=f"{FCC_DIC['name']}_built")
         installer.addPackage(env, dependencies=['git', 'make', 'gcc'], default=default)
 
     @classmethod
     def addProtacModelPackage(cls, env, default=True):
-        """ Clones gaoqiweng/PROTAC-Model itself - public repo, no build step, its code
-        is called directly by the protocol/rosetta/scripts/run_*.py drivers. """
+        """ Clones gaoqiweng/PROTAC-Model itself, public repo, no build step, its code
+        is called directly by the protocol/rosetta/scripts/run_protac_model.py driver. """
         installer = InstallHelper(PROTAC_MODEL_DIC['name'], packageHome=cls.getVar(PROTAC_MODEL_DIC['home']),
-                                  packageVersion=PROTAC_MODEL_DIC['version'])
-        # Same binaryFolderName reasoning as addFCCPackage above (named subfolder, not
-        # '.') - getProtacModelScript()/getProtacModelPython() below account for it.
+                                packageVersion=PROTAC_MODEL_DIC['version'])
         installer.getCloneCommand(
             'https://github.com/gaoqiweng/PROTAC-Model.git', binaryFolderName=PROTAC_MODEL_DIC['name'],
             targeName=f"{PROTAC_MODEL_DIC['name']}_cloned")
@@ -203,12 +182,8 @@ class Plugin(pwchemPlugin):
 
     @classmethod
     def addProtacModelPythonPackage(cls, env, default=True):
-        """ Dedicated Python 2.7 conda env (with RDKit) to run PROTAC-Model's own code -
-        never scipion3's own env, and not the local 'protac-model' conda env some
-        machines may already have lying around (that one is Python 3.10, incompatible
-        with this genuinely-Python-2 codebase).
-        RDKit's own channel stopped publishing py2.7 builds after 2016.03.3 (checked
-        anaconda.org/rdkit/rdkit's full file list) - pinned explicitly below.
+        """ Dedicated Python 2.7 conda env (with RDKit) to run PROTAC-Model's own code.
+        RDKit's own channel stopped publishing py2.7 builds after 2016.03.3,pinned explicitly below.
         Confirmed on a real install: conda's solver picks a compatible numpy (1.11.3) on
         its own, no manual pin needed. """
         installer = InstallHelper(PROTAC_MODEL_PYTHON_DIC['name'],
@@ -227,6 +202,7 @@ class Plugin(pwchemPlugin):
             f"ln -s $CONDA_PREFIX {cls.getVar(PROTAC_MODEL_PYTHON_DIC['home'])}",
             targetName=f"{PROTAC_MODEL_PYTHON_DIC['name']}_symlinked")
         installer.addPackage(env, dependencies=['conda'], default=default)
+
     @classmethod
     def _requireToolHome(cls, toolDic):
         """ Return toolDic['home']'s configured value, raising if the user never set it.
@@ -245,15 +221,9 @@ class Plugin(pwchemPlugin):
 
     @classmethod
     def _binaryLoads(cls, path):
-        """ True if the ELF binary at path exists and has every shared-library dependency
-        resolved. Existence alone isn't enough: FRODOCK's intel build can be present but
-        fail at runtime because the Intel MKL runtime it needs isn't installed - `ldd`
-        reports that as a 'not found' line instead of failing to run.
-        Shells out to the system's own `ldd` directly, unlike the rest of this plugin
-        (which always calls external tools via getProgram()/runProgram()/
-        runCondaScript()) - this is a one-off build-time introspection of a binary that
-        isn't itself a managed dependency, not a pipeline step, so that convention
-        doesn't apply here. """
+        """ True if path exists and ldd resolves all its shared-library dependencies.
+        Existence alone isn't enough: FRODOCK's intel build can be present but missing
+        the Intel MKL runtime, which ldd reports as 'not found' rather than failing. """
         if not os.path.exists(path):
             return False
         result = subprocess.run(['ldd', path], capture_output=True, text=True)
@@ -261,16 +231,10 @@ class Plugin(pwchemPlugin):
 
     @classmethod
     def prepareFrodockBinDir(cls, targetDir):
-        """ Build a `targetDir/bin/` shim with one symlink per FRODOCK_BINARIES entry
-        (unsuffixed name, e.g. 'frodock'), each pointing at whichever real build (intel or
-        gcc) actually loads on this machine - preferring intel where it works (typically
-        faster), falling back to gcc otherwise.
-        This exists because PROTAC-Model's own fallback (utils/frodock.py) only checks
-        that the intel build's *file* exists, not that it loads, so on a machine with the
-        intel binary present but its MKL dependency missing, that fallback never fires.
-        Pointing FRODOCK (see getProtacModelEnviron) at this shim instead of the real
-        FRODOCK_HOME makes PROTAC-Model's own existence check see only the working build,
-        without touching any of its resolution logic. Returns targetDir. """
+        """ Build a `targetDir/bin/` shim with one symlink per FRODOCK binary, pointing
+        each at whichever build (intel or gcc) actually loads here: intel preferred,
+        gcc as fallback. PROTAC-Model's own intel/gcc fallback only checks file existence,
+        not loadability, so this shim covers that gap. Returns targetDir. """
         home = cls._requireToolHome(FRODOCK_DIC)
         binDir = os.path.join(targetDir, 'bin')
         os.makedirs(binDir, exist_ok=True)
@@ -280,10 +244,7 @@ class Plugin(pwchemPlugin):
             gcc = os.path.join(home, 'bin', f'{name}_gcc')
             if cls._binaryLoads(intel):
                 chosen = intel
-            # Both candidates get the same ldd check - a gcc build that merely exists as
-            # a file but is itself missing some shared dependency (incompatible glibc,
-            # a missing system library...) would otherwise reproduce the exact bug this
-            # shim exists to fix, just shifted from the intel binary to the gcc one.
+            # gcc gets the same ldd check, it could be broken too.
             elif cls._binaryLoads(gcc):
                 chosen = gcc
             else:
@@ -294,14 +255,10 @@ class Plugin(pwchemPlugin):
                 os.remove(link)
             os.symlink(os.path.abspath(chosen), link)
 
-        # Hard requirement, not a defensive extra: run_protac_model.py::runFrodock() does
-        # shutil.copy(os.environ['FRODOCK'] + '/bin/soap.bin', ...) before calling
-        # fro.frodock(), and FRODOCK now points at this shim in every phase - without this
-        # symlink that copy raises FileNotFoundError and the pipeline never gets started.
+        # run_protac_model.py copies soap.bin from this shim before running FRODOCK, so
+        # it needs to be here too, not just the binaries above.
         soapSrc = os.path.join(home, 'bin', 'soap.bin')
         if not os.path.exists(soapSrc):
-            # Fail here, not later as a confusing FileNotFoundError inside the Python 2
-            # driver once it tries to copy through a dangling symlink.
             raise FileNotFoundError(f'{soapSrc} not found under FRODOCK_HOME/bin.')
         soapLink = os.path.join(binDir, 'soap.bin')
         if os.path.lexists(soapLink):
@@ -346,7 +303,7 @@ class Plugin(pwchemPlugin):
         """ Path to an FCC clustering script (make_contacts.py, calc_fcc_matrix.py,
         cluster_fcc.py, ppretty_clusters.py...). Plain Python 2 scripts, not compiled
         binaries: the caller must still prepend its own interpreter. """
-        # FCC_HOME is the parent InstallHelper cloned into; the repo itself lives one
+        # FCC_HOME is the parent InstallHelper cloned into. The repo itself lives one
         # level down, in a named subfolder (see addFCCPackage's binaryFolderName).
         home = os.path.join(cls._requireToolHome(FCC_DIC), FCC_DIC['name'])
         path = os.path.join(home, 'scripts', scriptName)
@@ -356,21 +313,16 @@ class Plugin(pwchemPlugin):
 
     @classmethod
     def getProtacModelScript(cls, scriptName=''):
-        """ Return a path inside the PROTAC-Model checkout (gaoqiweng/PROTAC-Model), e.g.
-        getProtacModelScript() for the repo root (what our own rosetta/scripts/
-        run_protac_model.py driver adds to sys.path), or getProtacModelScript('main.py')
-        for a specific file. Same subfolder reasoning as getFCCScript above: PROTAC_MODEL_HOME
-        is the parent InstallHelper cloned into, the repo itself is one level down. """
+        """ Path inside the PROTAC-Model checkout, e.g. getProtacModelScript('main.py').
+        No scriptName returns the repo root itself. """
         home = os.path.join(cls._requireToolHome(PROTAC_MODEL_DIC), PROTAC_MODEL_DIC['name'])
         return os.path.join(home, scriptName) if scriptName else home
 
     @classmethod
     def getProtacModelPython(cls):
-        """ Path to the Python 2.7 (+ RDKit) interpreter dedicated to PROTAC-Model's own
-        code - only used to check the env is installed (see _validate in the protocol),
-        not to launch anything: runCondaScript() below activates this same conda env
-        instead, so the env's own 'python' lands on PATH (a bare absolute-interpreter
-        launch wouldn't, and FCC's clustering scripts need that). """
+        """ Path to PROTAC-Model's dedicated Python 2.7+RDKit interpreter. Only used to
+        check the env is installed. runCondaScript() activates the env instead of
+        launching this path directly. """
         home = cls._requireToolHome(PROTAC_MODEL_PYTHON_DIC)
         path = os.path.join(home, 'bin', 'python2')
         if not os.path.exists(path):
@@ -379,27 +331,14 @@ class Plugin(pwchemPlugin):
 
     @classmethod
     def getProtacModelEnviron(cls, frodockHome=None):
-        """ PROTAC-Model's own utils/*.py modules read these bare names (no _HOME suffix)
-        from os.environ at import time - this translates our *_HOME variables into that
-        convention in one place, for use as runCondaScript()'s extraEnvDict. ROSETTA is
-        required unconditionally (not just when refining): utils/rosetta.py is imported
-        by our driver script at module load for every phase, so ROSETTA must resolve even
-        for a frodock-only run. Unlike the other five, ROSETTA_HOME is owned by the
-        scipion-chem-rosetta plugin (a real dependency, see requirements.txt), so it's
-        resolved via RosettaPlugin.getVar() instead of our own _requireToolHome().
-        frodockHome: pass the shim built by prepareFrodockBinDir() so PROTAC-Model only
-        ever sees working FRODOCK binaries; defaults to the raw FRODOCK_HOME (no intel/gcc
-        vetting) when omitted, e.g. from _validate(), which only needs to confirm the var
-        is configured, not build the shim.
-        Every value is made absolute before being returned - this is the single place
-        where that normalization happens for environment variables, so no call site has
-        to remember it. It is not cosmetic: the consumers of these variables all run with
-        a cwd of our choosing (extra/frodock/, extra/rosetta/ - see the protocol's steps),
-        never the Scipion project directory that a protocol's _getExtraPath()/_getPath()
-        helpers return their paths relative to, so any relative value handed in here would
-        silently resolve against the wrong directory inside the driver. abspath() is
-        evaluated here, while the calling protocol step still runs from the project
-        directory, so it resolves correctly. """
+        """ Translate our *_HOME variables into the bare names (FRODOCK, VINA, ...)
+        PROTAC-Model's own code reads from os.environ, as extraEnvDict for
+        runCondaScript(). ROSETTA is required even for a frodock-only run (its module is
+        imported unconditionally) and comes from RosettaPlugin, not our own vars.
+        frodockHome: pass prepareFrodockBinDir()'s shim to vet intel/gcc; omit for a raw
+        FRODOCK_HOME (e.g. from _validate(), which just checks the var is set).
+        All paths are made absolute here, since the driver runs from extra/frodock/ or
+        extra/rosetta/, not the Scipion project directory a relative path would assume. """
         rosettaHome = RosettaPlugin.getVar(ROSETTA_DIC['home'])
         if rosettaHome is None:
             raise FileNotFoundError(
@@ -419,40 +358,30 @@ class Plugin(pwchemPlugin):
 
     @classmethod
     def getPluginScript(cls, scriptName):
-        """ Path to a script bundled with this plugin itself (protac/scripts/<scriptName>),
-        e.g. run_protac_model.py - mirrors pwchem's Plugin.getScriptsDir(). Absolute (see
-        _PLUGIN_DIR): the returned path is handed to a process running from some other
-        working directory. """
+        """ Path to a script bundled with this plugin (protac/scripts/<scriptName>).
+        Absolute, since it's handed to a process running from another working dir. """
         return os.path.join(_PLUGIN_DIR, 'scripts', scriptName)
+    
     @classmethod
     def runCondaScript(cls, scriptPath, args, condaDic, extraEnvDict=None, cwd=None):
-        """ Launch a Python script with a conda env activated first, instead of calling
-        that env's interpreter by absolute path - mirrors pwchem's Plugin.runScript(). The
-        difference matters here: run_protac_model.py (--phase filter) ends up shelling out
-        to FCC's clustering scripts as a bare 'python <script>.py' command (see
-        PROTAC-Model's own preprocess.py) - that only resolves to the right Python 2.7 if
-        this env's bin/ is actually on PATH, which activating it does and launching by
-        absolute interpreter path alone would not.
-        scriptPath is made absolute (and quoted) here rather than at each call site: cwd
-        below is deliberately not the Scipion project directory, so a project-relative
-        script path would not resolve once the shell has cd'd there. """
+        """ Run a Python script with condaDic's env activated first, rather than calling
+        that env's interpreter by absolute path - needed because PROTAC-Model itself
+        shells out to FCC's scripts as a bare 'python ...', which only finds the right
+        Python 2.7 if the env's bin/ is on PATH. scriptPath is made absolute here since
+        cwd is not the Scipion project directory. """
         program = f'{cls.getEnvActivationCommand(condaDic)} && python "{os.path.abspath(scriptPath)}"'
         cls.runProgram(program, args, extraEnvDict=extraEnvDict, cwd=cwd)
 
     @classmethod
     def getEnviron(cls):
-        """ Base environment for launching external programs - starts from the current
-        process environment; tool-specific additions (FRODOCK/ADFRSUITE/VINA/...) are
+        """ Base environment for launching external programs. Tool-specific vars are
         layered on top via runProgram's extraEnvDict, not here. """
         return pwutils.Environ(os.environ)
 
     @classmethod
     def runProgram(cls, program, args=None, extraEnvDict=None, cwd=None):
-        """ Internal shortcut function to launch an external program (Rosetta or, e.g.,
-        FRODOCK). Not tool-specific: only builds the environment and launches the process.
-        cwd is resolved here, while we are still running from the Scipion project
-        directory: subprocess would resolve a relative cwd the same way, but pinning it
-        now keeps the value that gets logged/reported on failure unambiguous. """
+        """ Launch an external program with the given env/cwd. Not tool-specific.
+        cwd is resolved to absolute here so failures log an unambiguous path. """
         env = cls.getEnviron()
         if extraEnvDict is not None:
             env.update(extraEnvDict)
