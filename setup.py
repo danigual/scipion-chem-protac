@@ -36,6 +36,10 @@ setup(
     install_requires=[requirements],
     entry_points={'pyworkflow.plugin': 'protac = protac'},
     package_data={  # Optional
-       'protac': ['protocols.conf'],
+       # scripts/ is data, not a package: it has no __init__.py (same as pwchem/scripts/),
+       # and run_protac_model.py is Python 2 code run by a dedicated interpreter, never
+       # imported by Scipion. Without this line it is left out of any non-devel install and
+       # the three steps die with "can't open file .../scripts/run_protac_model.py".
+       'protac': ['protocols.conf', 'scripts/*.py'],
     }
 )
