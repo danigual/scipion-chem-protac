@@ -24,3 +24,38 @@
 # *  e-mail address 'scipion@cnb.csic.es'
 # *
 # **************************************************************************
+
+# Plugin version. Same split as the rest of the ecosystem: the number lives here and
+# __init__.py only does '__version__ = ALPHA_VERSION'.
+ALPHA_VERSION = '0.1'
+
+# ------------------------------- Package dictionaries -------------------------------
+# FRODOCK is a separate external tool, used by the PROTAC-Model pipeline
+# for the initial global protein-protein docking step. 3.12 is the latest stable
+# release and the one PROTAC-Model's own README points at.
+FRODOCK_DIC = {'name': 'frodock', 'version': '3.12', 'home': 'FRODOCK_HOME'}
+
+# Used later by filterPosesStep (PROTAC-Model's filter_frodock()): ADFRsuite binaries,
+# Vina, Voromqa, and FCC's clustering scripts. None of them is license-gated (unlike
+# Rosetta below), so these get real defineBinaries() via InstallHelper.
+# ADFRsuite's 1.0 is not a free choice: its download URL and the folder name its
+# installer extracts (ADFRsuite_x86_64Linux_1.0) both hardcode it.
+ADFRSUITE_DIC = {'name': 'adfrsuite', 'version': '1.0', 'home': 'ADFRSUITE_HOME'}
+# PROTAC-Model itself pins nothing here: its README still points at the pre-1.2
+# vina.scripps.edu download. 1.2.3 is chosen to match scipion-chem-autodock, and the
+# runtime patches in run_protac_model.py (uninitialised grid box in --score_only,
+# reworded score line) were checked against Vina's own source at 1.2.2, 1.2.3 and 1.2.5.
+VINA_DIC = {'name': 'vina', 'version': '1.2.3', 'home': 'VINA_HOME'}
+VOROMQA_DIC = {'name': 'voromqa', 'version': '1.29.4816', 'home': 'VOROMQA_HOME'}
+FCC_DIC = {'name': 'fcc', 'version': 'latest', 'home': 'FCC_HOME'}
+
+# PROTAC-Model's own code (main.py, utils/*) is called directly, not reimplemented
+# Its code is genuine Python 2, so PROTAC_MODEL_PYTHON_HOME is a dedicated
+# Python 2.7+rdkit conda env, never scipion3's own.
+PROTAC_MODEL_DIC = {'name': 'protac-model', 'version': 'latest', 'home': 'PROTAC_MODEL_HOME'}
+PROTAC_MODEL_PYTHON_DIC = {'name': 'protac-model-python', 'version': '2.7',
+                           'home': 'PROTAC_MODEL_PYTHON_HOME'}
+
+# The 4 programs PROTAC-Model's own utils/frodock.py resolves, each shipped as an
+# intel/gcc build pair ('<name>' / '<name>_gcc').
+FRODOCK_BINARIES = ['frodockgrid', 'frodock', 'frodockcluster', 'frodockview']

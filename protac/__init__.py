@@ -40,28 +40,8 @@ from .constants import *
 # abspath(__file__) could resolve wrong if computed after the cwd has moved.
 _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 
-_version_ = "0.1"
-# FRODOCK is a separate external tool, used by the PROTAC-Model pipeline
-# for the initial global protein-protein docking step.
-FRODOCK_DIC = {'name': 'frodock', 'home': 'FRODOCK_HOME'}
+__version__ = ALPHA_VERSION
 
-# Used later by filterPosesStep (PROTAC-Model's filter_frodock()): ADFRsuite binaries,
-# Vina, Voromqa, and FCC's clustering scripts. No license click-through needed (unlike
-# FRODOCK/Rosetta below), so these get real defineBinaries() via InstallHelper.
-ADFRSUITE_DIC = {'name': 'adfrsuite', 'version': '1.0', 'home': 'ADFRSUITE_HOME'}
-# Pinned for reproducibility, not as a workaround. The actual Vina bug (uninitialised
-# grid box in --score_only, changed "Affinity" wording) is patched at runtime in
-# run_protac_model.py, not here.
-VINA_DIC = {'name': 'vina', 'version': '1.2.2', 'home': 'VINA_HOME'}
-VOROMQA_DIC = {'name': 'voromqa', 'version': '1.29.4816', 'home': 'VOROMQA_HOME'}
-FCC_DIC = {'name': 'fcc', 'version': 'latest', 'home': 'FCC_HOME'}
-
-# PROTAC-Model's own code (main.py, utils/*) is called directly, not reimplemented
-# Its code is genuine Python 2, so PROTAC_MODEL_PYTHON_HOME is a dedicated 
-# Python 2.7+rdkit conda env, never scipion3's own.
-PROTAC_MODEL_DIC = {'name': 'protac-model', 'version': 'latest', 'home': 'PROTAC_MODEL_HOME'}
-PROTAC_MODEL_PYTHON_DIC = {'name': 'protac-model-python', 'version': '2.7',
-                           'home': 'PROTAC_MODEL_PYTHON_HOME'}
 
 class Plugin(pwchemPlugin):
     _homeVar = PROTAC_MODEL_DIC['home']
@@ -70,11 +50,11 @@ class Plugin(pwchemPlugin):
     @classmethod
     def _defineVariables(cls):
         """ Return and write a variable in the config file. """
-        # FRODOCK_HOME stays manual.The user points it at their own download.
-        cls._defineVar(FRODOCK_DIC['home'], None)
-
-        # The five tools below have no license gate, _defineEmVar wires each home
-        # to wherever defineBinaries()/InstallHelper installs it.
+        # None of these tools is license-gated, so _defineEmVar wires each home to
+        # wherever defineBinaries()/InstallHelper installs it. Pointing any of them at an
+        # existing install by hand still works: an explicit value in scipion.conf (or in
+        # the environment) wins over the default composed here.
+        cls._defineEmVar(FRODOCK_DIC['home'], cls.getEnvName(FRODOCK_DIC))
         cls._defineEmVar(ADFRSUITE_DIC['home'], cls.getEnvName(ADFRSUITE_DIC))
         cls._defineEmVar(VINA_DIC['home'], cls.getEnvName(VINA_DIC))
         cls._defineEmVar(VOROMQA_DIC['home'], cls.getEnvName(VOROMQA_DIC))
@@ -84,8 +64,9 @@ class Plugin(pwchemPlugin):
 
     @classmethod
     def defineBinaries(cls, env):
-        # FRODOCK/Rosetta excluded on purpose (manual,ROSETTA_HOME 
-        # is scipion-chem-rosetta's own responsibility).
+        # Rosetta excluded on purpose: its license needs a personal academic
+        # registration, and ROSETTA_HOME is scipion-chem-rosetta's own responsibility.
+        cls.addFrodockPackage(env)
         cls.addADFRSuitePackage(env)
         cls.addVinaPackage(env)
         cls.addVoromqaPackage(env)
@@ -94,6 +75,44 @@ class Plugin(pwchemPlugin):
         cls.addProtacModelPythonPackage(env)
 
     # ---------------------------- Package installers (InstallHelper) -------------
+    @classmethod
+    def addFrodockPackage(cls, env, default=True):
+        """ Downloads and unpacks FRODOCK. The tarball ships both the intel and the gcc
+        builds already compiled, so there is no build step - prepareFrodockBinDir() picks
+        whichever of the two actually loads on this machine.
+
+        The download URL is the target of the Download button on the vendor's page. It
+        carries a token that changes whenever they update the site, and a stale token is
+        answered with HTTP 200 and a short HTML error page rather than an error status,
+        so the download "succeeds" and writes something that is not a tarball. The gzip
+        check below is what turns that into a readable failure. """
+        installer = InstallHelper(FRODOCK_DIC['name'], packageHome=cls.getVar(FRODOCK_DIC['home']),
+                                  packageVersion=FRODOCK_DIC['version'])
+        installer.addCommand(
+            # Single-quoted: the URL carries '&' and '[]', and these commands are run
+            # through a shell, so unquoted the '&' would split it into background jobs.
+            "wget -q -O frodock.tgz 'https://chaconlab.org/component/zoo/"
+            "?task=callelement&format=raw&item_id=17"
+            "&element=f85c494b-2b32-4109-b8c1-083cca2b7db6&method=download"
+            "&args[0]=3acfd359e585affd517dbfe436236163' && "
+            # The exit below kills this whole shell outright on a bad download, so no
+            # outer grouping is needed to keep 'tar'/'rm' from running afterwards - only
+            # the inner '{ }' is needed, to make echo+exit a single branch of the '||'.
+            "gzip -t frodock.tgz 2>/dev/null || { echo 'FRODOCK download failed: the "
+            "server did not return a tarball. The download link carries a token that "
+            "changes when the vendor updates their site; get the current one by copying "
+            "the target of the Download button at "
+            "https://chaconlab.org/modeling/frodock/frodock-donwload and update it in "
+            "addFrodockPackage, or install FRODOCK by hand and point FRODOCK_HOME at "
+            "it.' >&2; exit 1; } && "
+            # --strip-components=1 drops the tarball's own frodock3_linux64/ top level, so
+            # the binaries land in <FRODOCK_HOME>/bin, which is where the rest of this
+            # plugin (prepareFrodockBinDir) looks for them.
+            "tar -xzf frodock.tgz --strip-components=1 && "
+            "rm -f frodock.tgz",
+            targetName=f"{FRODOCK_DIC['name']}_installed")
+        installer.addPackage(env, dependencies=['wget', 'tar', 'gzip'], default=default)
+
     @classmethod
     def addADFRSuitePackage(cls, env, default=True):
         """ Downloads and unpacks ADFRsuite. Instructions: -d is the destination folder,
@@ -117,11 +136,9 @@ class Plugin(pwchemPlugin):
     def addVinaPackage(cls, env, default=True):
         """ Installs the Vina CLI binary via conda-forge. PROTAC-Model shells out to
         $VINA/bin/vina, so we need the compiled binary, not just the 'vina' PyPI package
-        (Python bindings only). pythonVersion pinned to 3.10, not 3.11: checked
-        conda-forge's own repodata. vina=1.2.2 only ships py37-py310 builds, 
-        no py311 one, so a 3.11 env would force conda to downgrade the env's own
-        Python to satisfy the vina constraint (or fail outright), not the up-front pin
-        InstallHelper's own naming implies. """
+        (Python bindings only). pythonVersion stays at 3.10: it's what the rest of the
+        ecosystem uses for Vina, and conda-forge's repodata confirms vina=1.2.3 ships a
+        py310 build for linux-64, so the up-front pin is satisfiable as written. """
         installer = InstallHelper(VINA_DIC['name'], packageHome=cls.getVar(VINA_DIC['home']),
                                   packageVersion=VINA_DIC['version'])
         installer.getCondaEnvCommand(
@@ -205,19 +222,21 @@ class Plugin(pwchemPlugin):
 
     @classmethod
     def _requireToolHome(cls, toolDic):
-        """ Return toolDic['home']'s configured value, raising if the user never set it.
-        Shared by the getXProgram() helpers below so the "not configured" error is
-        consistent across tools instead of duplicated once per tool. """
-        home = cls.getVar(toolDic['home'])
-        if home is None:
-            raise FileNotFoundError(
-                f"{toolDic['home']} is not set. Point it to your {toolDic['name']} "
-                "installation (e.g. in scipion.conf or as a shell environment variable).")
-        return home
+        """ Return toolDic['home']'s configured value, raising if it is unset or does not
+        exist on disk. Shared by the getXProgram() helpers below so the "not configured"
+        error is consistent across tools instead of duplicated once per tool.
 
-    # The 4 programs PROTAC-Model's own utils/frodock.py resolves, each shipped as an
-    # intel/gcc build pair ('<name>' / '<name>_gcc').
-    FRODOCK_BINARIES = ['frodockgrid', 'frodock', 'frodockcluster', 'frodockview']
+        The isdir() half is not redundant: _defineEmVar always composes a path under
+        EM_ROOT and so never yields None, meaning a tool that was simply never installed
+        would otherwise pass unnoticed all the way to a failing run. """
+        home = cls.getVar(toolDic['home'])
+        if home is None or not os.path.isdir(home):
+            raise FileNotFoundError(
+                f"{toolDic['home']} does not point to an existing {toolDic['name']} "
+                f"installation (got: {home}). Install it with 'scipion3 installb "
+                f"{cls.getEnvName(toolDic)}', or set the variable (e.g. in scipion.conf "
+                "or as a shell environment variable) to your own installation.")
+        return home
 
     @classmethod
     def _binaryLoads(cls, path):
@@ -239,7 +258,7 @@ class Plugin(pwchemPlugin):
         binDir = os.path.join(targetDir, 'bin')
         os.makedirs(binDir, exist_ok=True)
 
-        for name in cls.FRODOCK_BINARIES:
+        for name in FRODOCK_BINARIES:
             intel = os.path.join(home, 'bin', name)
             gcc = os.path.join(home, 'bin', f'{name}_gcc')
             if cls._binaryLoads(intel):
@@ -336,7 +355,8 @@ class Plugin(pwchemPlugin):
         runCondaScript(). ROSETTA is required even for a frodock-only run (its module is
         imported unconditionally) and comes from RosettaPlugin, not our own vars.
         frodockHome: pass prepareFrodockBinDir()'s shim to vet intel/gcc; omit for a raw
-        FRODOCK_HOME (e.g. from _validate(), which just checks the var is set).
+        FRODOCK_HOME (e.g. from _validate(), which only checks the directory exists, not
+        that the binaries inside it actually load).
         All paths are made absolute here, since the driver runs from extra/frodock/ or
         extra/rosetta/, not the Scipion project directory a relative path would assume. """
         rosettaHome = RosettaPlugin.getVar(ROSETTA_DIC['home'])
