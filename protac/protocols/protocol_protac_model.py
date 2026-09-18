@@ -38,7 +38,7 @@ PROTAC-mediated protein-protein ternary complexes:
   3. Optional RosettaDock refinement of the filtered poses (slower, more accurate).
 
 None of PROTAC-Model's own pipeline logic is reimplemented here: each phase below just
-stages arguments and launches rosetta/scripts/run_protac_model.py (a Python 2 driver,
+stages arguments and launches protac/scripts/run_protac_model.py (a Python 2 driver,
 run under a dedicated conda env), which in turn calls straight into PROTAC-Model's own
 utils.frodock/utils.rosetta functions.
 """
@@ -47,7 +47,7 @@ import os
 
 from pyworkflow.constants import BETA
 from pyworkflow.protocol import params
-from pyworkflow.utils import Message
+from pyworkflow.utils import Message, cleanPath
 import pyworkflow.object as pwobj
 
 from pwem.protocols import EMProtocol
@@ -76,22 +76,49 @@ class ProtPROTACModel(EMProtocol):
         group = form.addGroup('Proteins')
         group.addParam('inputReceptor', params.PointerParam, pointerClass='AtomStruct',
                        label='Receptor structure', allowsNull=False,
-                       help='Larger of the two proteins (typically the E3 ligase). Passed '
+                       help='Larger of the two proteins. Passed '
                             'as the FRODOCK receptor. Per PROTAC-Model\'s own requirements, '
                             'this structure should already include its bound small-molecule '
-                            'warhead (as HETATM records) and exclude unrelated heteroatoms '
-                            '(crystallization waters, ions, buffer molecules, etc.).')
+                            'warhead (as HETATM records). Unrelated heteroatoms are stripped '
+                            'automatically when its warhead is named below.')
+        group.addParam('receptorLigandName', params.StringParam, allowsNull=True,
+                       label='Receptor warhead residue name',
+                       help='Residue name of the bound warhead in the receptor, as it appears '
+                            'in the PDB HETATM records (e.g. "B96"). Every other heteroatom '
+                            'is then removed.\n\n'
+                            'This matters more than it looks: PROTAC-Model reads *every* '
+                            'HETATM record as part of the warhead, without filtering by '
+                            'residue. Leaving a sulfate or a glycerol from the '
+                            'crystallization buffer in the file merges it into the ligand, '
+                            'which shifts the anchoring point and yields wrong ternary models '
+                            'with perfectly normal-looking scores.\n\n'
+                            'Leave empty only if the structure already contains the warhead '
+                            'as its single heteroatom.')
         group.addParam('inputTarget', params.PointerParam, pointerClass='AtomStruct',
                        label='Target structure', allowsNull=False,
                        help='Smaller of the two proteins (typically the protein of '
-                            'interest, POI). Passed as the FRODOCK docking target. Same '
-                            'requirement as "Receptor structure": keep its bound warhead, '
-                            'exclude unrelated heteroatoms.')
+                            'interest, POI). Passed as the FRODOCK docking target. Per '
+                            'PROTAC-Model\'s own requirements, this structure should '
+                            'already include its bound small-molecule warhead (as HETATM '
+                            'records). Unrelated heteroatoms are stripped automatically '
+                            'when its warhead is named below.')
+        group.addParam('targetLigandName', params.StringParam, allowsNull=True,
+                       label='Target warhead residue name',
+                       help='Residue name of the bound warhead in the target, as it '
+                            'appears in the PDB HETATM records. Same purpose and same '
+                            'caveats as "Receptor warhead residue name" above, for the '
+                            'other protein.')
         group.addParam('siteCoords', params.StringParam, allowsNull=False,
                        label='Receptor interface site (X,Y,Z)',
                        help='Coordinates of a point on the receptor surface, at the '
                             'interface where the ternary complex is expected to form. '
-                            'FRODOCK uses this point to restrict the global docking search.')
+                            'FRODOCK uses this point to restrict the global docking search.\n\n'
+                            "It must be the centroid of the receptor's warhead HETATM "
+                            'records, computed on the same structure PROTAC-Model will '
+                            'actually see: if "Receptor warhead residue name" is set '
+                            'above, that means the *cleaned* structure (warhead only), '
+                            'not the raw input - the two can differ once other '
+                            'heteroatoms are stripped out.')
 
         group = form.addGroup('PROTAC')
         group.addParam('protacSmiles', params.StringParam, allowsNull=False,
@@ -129,7 +156,10 @@ class ProtPROTACModel(EMProtocol):
                        label='Refine with RosettaDock',
                        help='Refine the filtered FRODOCK poses with RosettaDock. Improves '
                             'accuracy but is considerably slower than FRODOCK + filtering '
-                            'alone.')
+                            'alone.\n\n'
+                            'Requires more than 10 threads ("Threads" below): '
+                            "PROTAC-Model's own refinement code crashes outright with 10 "
+                            'or fewer.')
 
         form.addParallelSection(threads=4, mpi=1)
 
@@ -147,16 +177,18 @@ class ProtPROTACModel(EMProtocol):
 
     def convertInputStep(self):
         """ Converts the receptor/target AtomStructs into the clean PDBs that FRODOCK
-        expects. Only water is stripped here: per PROTAC-Model's own input requirements,
-        the receptor/target PDBs must keep their bound small-molecule warhead (a HETATM
-        record), so heteroatoms as a whole cannot be blanket-removed.
-        TODO: once the warhead's residue name is known/identifiable, also strip other
-        unrelated heteroatoms (ions, buffer molecules, etc.) via cleanPDB's het2rem,
-        instead of keeping every non-water heteroatom. """
-        cleanPDB(self.inputReceptor.get().getFileName(), self._getReceptorFile(),
-                waters=True, hetatm=False)
-        cleanPDB(self.inputTarget.get().getFileName(), self._getTargetFile(),
-                waters=True, hetatm=False)
+        expects. Water is always stripped. Other heteroatoms are stripped down to just
+        the named warhead when its residue name is given (receptorLigandName/
+        targetLigandName), since PROTAC-Model itself copies *every* HETATM record into
+        the ligand file without filtering by residue - left unfiltered, a stray sulfate
+        or glycerol from the crystallization buffer would merge into the warhead and
+        shift its anchoring point. Left empty, the field is a no-op: every non-water
+        heteroatom is kept, which is only safe if the structure already has the warhead
+        as its sole heteroatom. """
+        self._cleanReceptorOrTarget(self.inputReceptor.get().getFileName(),
+                                    self._getReceptorFile(), self.receptorLigandName)
+        self._cleanReceptorOrTarget(self.inputTarget.get().getFileName(),
+                                    self._getTargetFile(), self.targetLigandName)
 
         # Built once here, reused by frodockStep/filterPosesStep/refineStep (see
         # _getFrodockBinDir): picks whichever FRODOCK build (intel/gcc) actually loads on
@@ -213,6 +245,13 @@ class ProtPROTACModel(EMProtocol):
         via run_protac_model.py --phase filter -> PROTAC-Model's own fro.filter_frodock().
         Same cwd as frodockStep: filter_frodock() reads the files frodock() just wrote
         there (frodock_score.txt, receptor.pdb, target.pdb...). """
+        # PROTAC-Model's filter_frodock() only creates extra/frodock_results if it is
+        # missing (utils/frodock.py: 'if os.path.exists(...) == False: os.makedirs(...)'),
+        # it never clears a pre-existing one. Pose ids are renumbered 1..N on every run,
+        # so a partial relaunch could otherwise leave a stale model_merge_<id>.pdb paired
+        # with a fresh score line for that same id in createOutputStep.
+        cleanPath(self._getExtraPath('frodock_results'))
+
         targetSmi = self._getSmiArg(self.targetLigandSmiles)
         recSmi = self._getSmiArg(self.receptorLigandSmiles)
         args = (f'--phase filter --cpu {self.numberOfThreads.get()} '
@@ -233,6 +272,9 @@ class ProtPROTACModel(EMProtocol):
         # hardcoded relative paths like '../frodock/...' to reach filterPosesStep's output.
         rosettaDir = self._getExtraPath('rosetta')
         os.makedirs(rosettaDir, exist_ok=True)
+        # Same reasoning as filterPosesStep's cleanPath: ros.rosetta() only creates
+        # extra/rosetta_results if missing, never clears a pre-existing one.
+        cleanPath(self._getExtraPath('rosetta_results'))
 
         targetSmi = self._getSmiArg(self.targetLigandSmiles)
         recSmi = self._getSmiArg(self.receptorLigandSmiles)
@@ -257,6 +299,17 @@ class ProtPROTACModel(EMProtocol):
             resultsDir = self._getExtraPath('frodock_results', 'all')
             resultsFile = os.path.join(resultsDir, 'results_frodock.txt')
 
+        # Without this check, a filtering/refinement phase that produced nothing (see the
+        # two causes below) would silently fall through to an empty outputSet and a green
+        # protocol - worse than a clear failure, since nothing downstream would flag it.
+        if not os.path.exists(resultsFile):
+            raise RuntimeError(
+                f'{resultsFile} was not produced. This usually means PROTAC-Model found '
+                '0 compatible poses: either the receptor/target warheads are not exact '
+                'substructures of the PROTAC SMILES (PROTAC-Model needs '
+                'GetSubstructMatch to succeed for both), or "Receptor interface site '
+                '(X,Y,Z)" is not the centroid of the receptor\'s warhead HETATM records.')
+
         outputSet = SetOfAtomStructsChem().create(self._getPath())
         with open(resultsFile) as f:
             for line in f:
@@ -276,6 +329,15 @@ class ProtPROTACModel(EMProtocol):
                 # matches pwchem's own '_score' convention (pwchem.objects.base).
                 atomStruct._score = pwobj.Float(float(score))
                 outputSet.append(atomStruct)
+
+        if len(outputSet) == 0:
+            raise RuntimeError(
+                f'{resultsFile} exists but lists no usable pose (either it is empty, or '
+                'every model_merge_*.pdb it references is missing). This usually means '
+                'PROTAC-Model found 0 compatible poses: either the receptor/target '
+                'warheads are not exact substructures of the PROTAC SMILES, or '
+                '"Receptor interface site (X,Y,Z)" is not the centroid of the '
+                "receptor's warhead HETATM records.")
 
         self._defineOutputs(outputTernaryModels=outputSet)
         self._defineSourceRelation(self.inputReceptor, outputSet)
@@ -299,6 +361,18 @@ class ProtPROTACModel(EMProtocol):
             errors.append('"E3 ligand conformer 2" was set without "E3 ligand conformer 1". '
                           'Set conformer 1 first, or clear conformer 2.')
 
+        # PROTAC-Model's own generate_rosetta_para() (utils/rosetta.py) only assigns
+        # gen_conf_num when cpu > 10, and then uses it unconditionally for -nstruct -
+        # cpu<=10 is an UnboundLocalError, but only after frodockStep/filterPosesStep
+        # have already run to completion. Caught here instead, before any of that runs.
+        if self.doRefine.get() and self.numberOfThreads.get() <= 10:
+            errors.append('"Refine with RosettaDock" needs more than 10 threads: '
+                          'PROTAC-Model\'s own refinement code (generate_rosetta_para) '
+                          'crashes with cpu<=10 (UnboundLocalError on gen_conf_num), and '
+                          'that number also sets mpirun\'s -np and Rosetta\'s nstruct, so '
+                          f'it cannot be silently raised for you. Got {self.numberOfThreads.get()} '
+                          'threads.')
+
         # Both raise FileNotFoundError on the first missing tool home rather than a list,
         # so only one error is reported per call - acceptable, fixed one at a time.
         for check in (Plugin.getProtacModelEnviron, Plugin.getProtacModelPython):
@@ -316,15 +390,33 @@ class ProtPROTACModel(EMProtocol):
         # matching protocol_flexDDG.py's own _summary().
         if self.isFinished() and hasattr(self, 'outputTernaryModels'):
             models = self.outputTernaryModels
-            bestScore = min(model._score.get() for model in models)
-            summary.append(f'Generated {len(models)} ternary complex model(s); best '
-                           f'(most negative) interface score: {bestScore:.2f}.')
+            # createOutputStep now fails the protocol on 0 models (see its own comment),
+            # so an empty outputTernaryModels shouldn't reach here - kept anyway, since a
+            # finished protocol with no models used to crash _summary outright otherwise.
+            if len(models):
+                bestScore = min(model._score.get() for model in models)
+                summary.append(f'Generated {len(models)} ternary complex model(s); best '
+                               f'(most negative) interface score: {bestScore:.2f}.')
         return summary
 
     def _citations(self):
         return ['LeaverFay2011']
 
     # --------------------------- UTILS functions ------------------------------
+    @staticmethod
+    def _cleanReceptorOrTarget(inFile, outFile, ligandNameParam):
+        """ Writes outFile as a water-stripped copy of inFile, additionally keeping only
+        the named warhead among heteroatoms when ligandNameParam is set. Shared by
+        convertInputStep for both the receptor and the target, which need the same
+        cleanup logic. .upper() on the residue name since PDB resnames are uppercase and
+        a hand-typed 'b96' otherwise wouldn't match CleanStructureSelect's het2keep. """
+        ligandName = ligandNameParam.get()
+        if ligandName:
+            cleanPDB(inFile, outFile, waters=True, hetatm=True,
+                    het2keep=[ligandName.strip().upper()])
+        else:
+            cleanPDB(inFile, outFile, waters=True, hetatm=False)
+
     def _getSiteCoords(self):
         """ Parses siteCoords ("X,Y,Z") into a tuple of 3 floats, or None if malformed. """
         parts = self.siteCoords.get().strip().split(',')
