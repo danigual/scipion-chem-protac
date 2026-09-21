@@ -59,3 +59,18 @@ PROTAC_MODEL_PYTHON_DIC = {'name': 'protac-model-python', 'version': '2.7',
 # The 4 programs PROTAC-Model's own utils/frodock.py resolves, each shipped as an
 # intel/gcc build pair ('<name>' / '<name>_gcc').
 FRODOCK_BINARIES = ['frodockgrid', 'frodock', 'frodockcluster', 'frodockview']
+
+# ---------------------------- ProtPROTACTransplantWarhead ----------------------------
+# A: a source residue counts as "pocket" if it has an atom within this distance of the
+# warhead being transplanted.
+POCKET_CUTOFF = 6.0
+# A: ligand-protein contacts closer than this, in the target, are counted as clashes.
+CLASH_CUTOFF = 2.0
+# Minimum number of source pocket residues that must have an aligned equivalent in the
+# target for the pocket-restricted superposition to be considered reliable.
+MIN_POCKET_PAIRS = 10
+# Canonical (uppercase) one-letter code for residues that appear as HETATM in a PDB but
+# are actually part of the main chain. Deliberately NOT pwchem.utils.MODIFIED_RESIDUES3TO1:
+# that dict uses arbitrary lowercase codes for a different purpose (mutation wizards) that
+# fall outside BLOSUM62's alphabet and would silently break sequence alignment here.
+MODRES_TO_CANONICAL = {'PTR': 'Y', 'TPO': 'T', 'SEP': 'S', 'MSE': 'M'}
