@@ -145,43 +145,35 @@ class Plugin(pwchemPlugin):
         installer.addPackage(env, dependencies=['wget', 'tar'], default=default)
 
     @classmethod
-    def addVinaPackage(cls, env, default=True):
-        """ Installs the Vina CLI binary via conda-forge. PROTAC-Model shells out to
-        $VINA/bin/vina, so we need the compiled binary, not just the 'vina' PyPI package
-        (Python bindings only). pythonVersion stays at 3.10: it's what the rest of the
-        ecosystem uses for Vina, and conda-forge's repodata confirms vina=1.2.3 ships a
-        py310 build for linux-64, so the up-front pin is satisfiable as written. """
-        installer = InstallHelper(VINA_DIC['name'], packageHome=cls.getVar(VINA_DIC['home']),
-                                  packageVersion=VINA_DIC['version'])
-        installer.getCondaEnvCommand(
-            binaryName=VINA_DIC['name'], binaryVersion=VINA_DIC['version'], pythonVersion='3.10'
-        ).addCommand(
-            f"{cls.getEnvActivationCommand(VINA_DIC)} && conda install -y -c conda-forge vina={VINA_DIC['version']}",
-            targetName=f"{VINA_DIC['name']}_installed"
-        ).addCommand(
-            # getCondaEnvCommand installs under conda's own envs dir, not packageHome
-            # without this symlink getVinaProgram() would find an empty folder.
-            f"{cls.getEnvActivationCommand(VINA_DIC)} && rm -rf {cls.getVar(VINA_DIC['home'])} && "
-            f"ln -s $CONDA_PREFIX {cls.getVar(VINA_DIC['home'])}",
-            targetName=f"{VINA_DIC['name']}_symlinked")
+    def _addCondaEnvPackage(cls, env, dic, pythonVersion, installCmd=None, default=True):
+        """ Creates a conda env for dic, optionally runs installCmd inside it, and symlinks
+        the env into dic's home: conda puts envs under its own envs/ dir, while the rest
+        of the plugin looks for them at the home _defineEmVar composes. """
+        activation = cls.getEnvActivationCommand(dic)
+        home = cls.getVar(dic['home'])
+        installer = InstallHelper(dic['name'], packageHome=home, packageVersion=dic['version'])
+        installer.getCondaEnvCommand(binaryName=dic['name'], binaryVersion=dic['version'],
+                                     pythonVersion=pythonVersion)
+        if installCmd:
+            installer.addCommand(f"{activation} && {installCmd}",
+                                 targetName=f"{dic['name']}_installed")
+        installer.addCommand(f"{activation} && rm -rf {home} && ln -s $CONDA_PREFIX {home}",
+                             targetName=f"{dic['name']}_symlinked")
         installer.addPackage(env, dependencies=['conda'], default=default)
 
     @classmethod
+    def addVinaPackage(cls, env, default=True):
+        """ The Vina CLI binary from conda-forge: PROTAC-Model shells out to
+        $VINA/bin/vina, which the 'vina' PyPI package (bindings only) doesn't provide. """
+        cls._addCondaEnvPackage(env, VINA_DIC, '3.10',
+                                f"conda install -y -c conda-forge vina={VINA_DIC['version']}",
+                                default=default)
+
+    @classmethod
     def addVoromqaPackage(cls, env, default=True):
-        """ Installs Voromqa (voronota) via bioconda. """
-        installer = InstallHelper(VOROMQA_DIC['name'], packageHome=cls.getVar(VOROMQA_DIC['home']),
-                                  packageVersion=VOROMQA_DIC['version'])
-        installer.getCondaEnvCommand(
-            binaryName=VOROMQA_DIC['name'], binaryVersion=VOROMQA_DIC['version'], pythonVersion='3.11'
-        ).addCommand(
-            f"{cls.getEnvActivationCommand(VOROMQA_DIC)} && conda install -y -c bioconda voronota={VOROMQA_DIC['version']}",
-            targetName=f"{VOROMQA_DIC['name']}_installed"
-        ).addCommand(
-            # Same symlink fix as addVinaPackage above.
-            f"{cls.getEnvActivationCommand(VOROMQA_DIC)} && rm -rf {cls.getVar(VOROMQA_DIC['home'])} && "
-            f"ln -s $CONDA_PREFIX {cls.getVar(VOROMQA_DIC['home'])}",
-            targetName=f"{VOROMQA_DIC['name']}_symlinked")
-        installer.addPackage(env, dependencies=['conda'], default=default)
+        cls._addCondaEnvPackage(env, VOROMQA_DIC, '3.11',
+                                f"conda install -y -c bioconda voronota={VOROMQA_DIC['version']}",
+                                default=default)
 
     @classmethod
     def addFCCPackage(cls, env, default=True):
@@ -211,26 +203,10 @@ class Plugin(pwchemPlugin):
 
     @classmethod
     def addProtacModelPythonPackage(cls, env, default=True):
-        """ Dedicated Python 2.7 conda env (with RDKit) to run PROTAC-Model's own code.
-        RDKit's own channel stopped publishing py2.7 builds after 2016.03.3,pinned explicitly below.
-        Confirmed on a real install: conda's solver picks a compatible numpy (1.11.3) on
-        its own, no manual pin needed. """
-        installer = InstallHelper(PROTAC_MODEL_PYTHON_DIC['name'],
-                                  packageHome=cls.getVar(PROTAC_MODEL_PYTHON_DIC['home']),
-                                  packageVersion=PROTAC_MODEL_PYTHON_DIC['version'])
-        installer.getCondaEnvCommand(
-            binaryName=PROTAC_MODEL_PYTHON_DIC['name'],
-            binaryVersion=PROTAC_MODEL_PYTHON_DIC['version'], pythonVersion='2.7'
-        ).addCommand(
-            f"{cls.getEnvActivationCommand(PROTAC_MODEL_PYTHON_DIC)} && conda install -y -c rdkit rdkit=2016.03.3",
-            targetName=f"{PROTAC_MODEL_PYTHON_DIC['name']}_installed"
-        ).addCommand(
-            # Same symlink fix as addVinaPackage/addVoromqaPackage below.
-            f"{cls.getEnvActivationCommand(PROTAC_MODEL_PYTHON_DIC)} && "
-            f"rm -rf {cls.getVar(PROTAC_MODEL_PYTHON_DIC['home'])} && "
-            f"ln -s $CONDA_PREFIX {cls.getVar(PROTAC_MODEL_PYTHON_DIC['home'])}",
-            targetName=f"{PROTAC_MODEL_PYTHON_DIC['name']}_symlinked")
-        installer.addPackage(env, dependencies=['conda'], default=default)
+        """ Python 2.7 env with RDKit for PROTAC-Model's own code. 2016.03.3 is the last
+        py2.7 build on RDKit's channel; conda picks a compatible numpy by itself. """
+        cls._addCondaEnvPackage(env, PROTAC_MODEL_PYTHON_DIC, '2.7',
+                                'conda install -y -c rdkit rdkit=2016.03.3', default=default)
 
     @classmethod
     def addProsettaCPackage(cls, env, default=True):
@@ -244,42 +220,16 @@ class Plugin(pwchemPlugin):
 
     @classmethod
     def addProsettaCPythonPackage(cls, env, default=True):
-        """ Py3 + RDKit + numpy + scikit-learn conda env for protac_lib.py's own code. """
-        installer = InstallHelper(PROSETTAC_PYTHON_DIC['name'],
-                                  packageHome=cls.getVar(PROSETTAC_PYTHON_DIC['home']),
-                                  packageVersion=PROSETTAC_PYTHON_DIC['version'])
-        installer.getCondaEnvCommand(
-            binaryName=PROSETTAC_PYTHON_DIC['name'], binaryVersion=PROSETTAC_PYTHON_DIC['version'],
-            pythonVersion='3.10'
-        ).addCommand(
-            f"{cls.getEnvActivationCommand(PROSETTAC_PYTHON_DIC)} && "
-            "conda install -y -c conda-forge rdkit numpy scikit-learn",
-            targetName=f"{PROSETTAC_PYTHON_DIC['name']}_installed"
-        ).addCommand(
-            # Same symlink fix as addVinaPackage above.
-            f"{cls.getEnvActivationCommand(PROSETTAC_PYTHON_DIC)} && "
-            f"rm -rf {cls.getVar(PROSETTAC_PYTHON_DIC['home'])} && "
-            f"ln -s $CONDA_PREFIX {cls.getVar(PROSETTAC_PYTHON_DIC['home'])}",
-            targetName=f"{PROSETTAC_PYTHON_DIC['name']}_symlinked")
-        installer.addPackage(env, dependencies=['conda'], default=default)
+        """ Py3 env with RDKit, numpy and scikit-learn for PRosettaC's own code. """
+        cls._addCondaEnvPackage(env, PROSETTAC_PYTHON_DIC, '3.10',
+                                'conda install -y -c conda-forge rdkit numpy scikit-learn',
+                                default=default)
 
     @classmethod
     def addProsettaCPython2Package(cls, env, default=True):
-        """ Bare Python 2.7 conda env for molfile_to_params.py (rosetta.py shells out to
-        the literal command 'python2.7 ...', so PROSETTAC_PYTHON2_HOME/bin must land on
-        PATH at call time - see getPRosettaCEnviron). """
-        installer = InstallHelper(PROSETTAC_PYTHON2_DIC['name'],
-                                  packageHome=cls.getVar(PROSETTAC_PYTHON2_DIC['home']),
-                                  packageVersion=PROSETTAC_PYTHON2_DIC['version'])
-        installer.getCondaEnvCommand(
-            binaryName=PROSETTAC_PYTHON2_DIC['name'], binaryVersion=PROSETTAC_PYTHON2_DIC['version'],
-            pythonVersion='2.7'
-        ).addCommand(
-            f"{cls.getEnvActivationCommand(PROSETTAC_PYTHON2_DIC)} && "
-            f"rm -rf {cls.getVar(PROSETTAC_PYTHON2_DIC['home'])} && "
-            f"ln -s $CONDA_PREFIX {cls.getVar(PROSETTAC_PYTHON2_DIC['home'])}",
-            targetName=f"{PROSETTAC_PYTHON2_DIC['name']}_symlinked")
-        installer.addPackage(env, dependencies=['conda'], default=default)
+        """ Bare Python 2.7 env: PRosettaC runs molfile_to_params.py as a literal
+        'python2.7 ...', so this env's bin/ goes on PATH (see getPRosettaCEnviron). """
+        cls._addCondaEnvPackage(env, PROSETTAC_PYTHON2_DIC, '2.7', default=default)
 
     @classmethod
     def _requireToolHome(cls, toolDic):
