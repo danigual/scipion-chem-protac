@@ -185,17 +185,6 @@ class TransplantReport:
     nClashes: int
     centroid: tuple
 
-    def asdict(self):
-        return {
-            'identityPct': self.identityPct,
-            'nAlignedPairs': self.nAlignedPairs,
-            'nPocketSource': self.nPocketSource,
-            'nPocketPairs': self.nPocketPairs,
-            'pocketRmsd': self.pocketRmsd,
-            'minLigProtDistance': self.minLigProtDistance,
-            'nClashes': self.nClashes,
-            'centroid': list(self.centroid),
-        }
 
 
 def runTransplant(sourcePdb, sourceChain, ligResname, targetPdb, targetChain,

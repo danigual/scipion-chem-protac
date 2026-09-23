@@ -38,8 +38,8 @@ text work: this module only translates Scipion inputs (AtomStruct pointers, form
 parameters) into file paths and the module's TransplantReport into Scipion objects.
 """
 
+import dataclasses
 import json
-import os
 
 from pyworkflow.constants import BETA
 from pyworkflow.protocol import params
@@ -189,7 +189,7 @@ class ProtPROTACTransplantWarhead(EMProtocol):
                  self._getOutputFile(), hetatm2=True)
 
         with open(self._getReportFile(), 'w') as f:
-            json.dump(report.asdict(), f, indent=2)
+            json.dump(dataclasses.asdict(report), f, indent=2)
 
         if report.nClashes > 0:
             self.warning(

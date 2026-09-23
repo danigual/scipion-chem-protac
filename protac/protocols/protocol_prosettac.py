@@ -245,8 +245,8 @@ class ProtPRosettaC(EMProtocol):
                               anchor1, anchor2):
         """ Phases 1+2 (entangled in the original, can't be split): per-structure
         addH_sdf -> translate_anchors -> clean -> mol_to_params -> relax -> clean. """
-        rosettaShim = Plugin.prepareRosettaScriptsShim(self._getRosettaShimDir())
-        babelShim = Plugin.preparePRosettaCBabelShim(self._getBabelShimDir())
+        Plugin.prepareRosettaScriptsShim(self._getRosettaShimDir())
+        Plugin.preparePRosettaCBabelShim(self._getBabelShimDir())
         # Rosetta's clean_pdb.py only reads PDB; toPdb converts mmCIF without renumbering.
         struct1File = toPdb(struct1File, self._getExtraPath('structure1.pdb'))
         struct2File = toPdb(struct2File, self._getExtraPath('structure2.pdb'))
@@ -259,7 +259,7 @@ class ProtPRosettaC(EMProtocol):
                f'--struct2 "{os.path.abspath(struct2File)}" --chain2 "{chain2}" '
                f'--head1 "{os.path.abspath(self._getHeadFile(1))}" --anchor1 {anchor1} '
                f'--head2 "{os.path.abspath(self._getHeadFile(2))}" --anchor2 {anchor2}')
-        self._runDriver(args, rosettaShim=rosettaShim, babelShim=babelShim)
+        self._runDriver(args)
 
     def sampleDistStep(self, protacSmiles):
         """ Phase 3: linker distance sampling, PRosettaC's own pl.SampleDist(). """
@@ -408,17 +408,13 @@ class ProtPRosettaC(EMProtocol):
         return []
 
     # --------------------------- UTILS functions ------------------------------
-    def _runDriver(self, args, rosettaShim=None, babelShim=None):
-        """ Launches run_prosettac.py for one phase. Always from the work dir, and always
-        with the full environment: PRosettaC's utils.py reads its 4 variables at import
-        time, so every phase needs all of them regardless of which it uses.
-        rosettaShim/babelShim: only prepareStructuresStep passes them, since it is the
-        step that builds the shims; everywhere else the same paths are recomputed. """
+    def _runDriver(self, args):
+        """ Launches run_prosettac.py for one phase, from the work dir and with the full
+        environment: PRosettaC's utils.py reads its 4 variables at import time. """
         Plugin.runCondaScript(Plugin.getPluginScript('run_prosettac.py'), args,
                               PROSETTAC_PYTHON_DIC,
                               extraEnvDict=Plugin.getPRosettaCEnviron(
-                                  rosettaHome=rosettaShim or self._getRosettaShimDir(),
-                                  obDir=babelShim or self._getBabelShimDir()),
+                                  self._getRosettaShimDir(), self._getBabelShimDir()),
                               cwd=self._getWorkDir())
 
     def _getClusterDirs(self):

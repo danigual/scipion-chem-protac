@@ -27,7 +27,6 @@
 
 import glob
 import os
-import shutil
 import subprocess
 
 import pyworkflow.utils as pwutils
@@ -306,17 +305,11 @@ class Plugin(pwchemPlugin):
 
     @classmethod
     def _forceSymlink(cls, source, link):
-        """ Symlink source at link (absolute target), replacing whatever was there.
-        A real directory left by an earlier, differently shaped version of a shim is
-        removed too - os.remove() alone would fail on it with a bare IsADirectoryError
-        that says nothing about which shim is stale. Never follows a symlink to a
-        directory: that one is unlinked, not emptied. """
-        os.makedirs(os.path.dirname(link), exist_ok=True)
-        if os.path.isdir(link) and not os.path.islink(link):
-            shutil.rmtree(link)
-        elif os.path.lexists(link):
-            os.remove(link)
-        os.symlink(os.path.abspath(source), link)
+        """ Symlink source at link, replacing whatever was there (file, link or a real
+        directory left by an older shim layout). """
+        pwutils.makePath(os.path.dirname(link))
+        pwutils.cleanPath(link)
+        pwutils.createAbsLink(source, link)
         return link
 
     @classmethod
@@ -439,50 +432,6 @@ class Plugin(pwchemPlugin):
         return targetDir
 
     @classmethod
-    def getADFRSuiteProgram(cls, progName):
-        """ Return an ADFRsuite binary (reduce, obabel, obenergy, prepare_receptor,
-        prepare_ligand...). Unlike FRODOCK, ADFRsuite ships a single build: no intel/gcc
-        fallback needed. """
-        home = cls._requireToolHome(ADFRSUITE_DIC)
-        path = os.path.join(home, 'bin', progName)
-        if not os.path.exists(path):
-            raise FileNotFoundError(f'{progName} not found under ADFRSUITE_HOME/bin ({home}).')
-        return path
-
-    @classmethod
-    def getVinaProgram(cls):
-        """ Return the Vina binary. No progName parameter: VINA_HOME only ever provides
-        this one program, unlike ADFRsuite/FRODOCK which bundle several. """
-        home = cls._requireToolHome(VINA_DIC)
-        path = os.path.join(home, 'bin', 'vina')
-        if not os.path.exists(path):
-            raise FileNotFoundError(f'vina not found under VINA_HOME/bin ({home}).')
-        return path
-
-    @classmethod
-    def getVoromqaProgram(cls):
-        """ Return the Voromqa binary (voronota-voromqa). Same single-program case as
-        getVinaProgram. """
-        home = cls._requireToolHome(VOROMQA_DIC)
-        path = os.path.join(home, 'bin', 'voronota-voromqa')
-        if not os.path.exists(path):
-            raise FileNotFoundError(f'voronota-voromqa not found under VOROMQA_HOME/bin ({home}).')
-        return path
-
-    @classmethod
-    def getFCCScript(cls, scriptName):
-        """ Path to an FCC clustering script (make_contacts.py, calc_fcc_matrix.py,
-        cluster_fcc.py, ppretty_clusters.py...). Plain Python 2 scripts, not compiled
-        binaries: the caller must still prepend its own interpreter. """
-        # FCC_HOME is the parent InstallHelper cloned into. The repo itself lives one
-        # level down, in a named subfolder (see addFCCPackage's binaryFolderName).
-        home = os.path.join(cls._requireToolHome(FCC_DIC), FCC_DIC['name'])
-        path = os.path.join(home, 'scripts', scriptName)
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"{scriptName} not found under FCC_HOME/{FCC_DIC['name']}/scripts ({home}).")
-        return path
-
-    @classmethod
     def getProtacModelScript(cls, scriptName=''):
         """ Path inside the PROTAC-Model checkout, e.g. getProtacModelScript('main.py').
         No scriptName returns the repo root itself. """
@@ -521,7 +470,7 @@ class Plugin(pwchemPlugin):
             'ADFRSUITE': cls._requireToolHome(ADFRSUITE_DIC),
             'VINA': cls._requireToolHome(VINA_DIC),
             'VOROMQA': cls._requireToolHome(VOROMQA_DIC),
-            # Same one-level-down layout as getFCCScript().
+            # The clone lives one level down, in a subfolder named after the package.
             'FCC': os.path.join(cls._requireToolHome(FCC_DIC), FCC_DIC['name']),
             'ROSETTA': rosettaHome,
             'PROTAC_MODEL_HOME': cls.getProtacModelScript(),
@@ -535,27 +484,20 @@ class Plugin(pwchemPlugin):
         return os.path.join(home, scriptName) if scriptName else home
 
     @classmethod
-    def getPRosettaCEnviron(cls, rosettaHome=None, obDir=None):
+    def getPRosettaCEnviron(cls, rosettaHome, obDir):
         """ Translate our *_HOME vars into PATCHDOCK/OB/SCRIPTS_FOL/ROSETTA_FOL - PRosettaC's
         utils.py reads all 4 from os.environ at import time, so every phase needs all 4
         regardless of what it actually uses. Also prepends PROSETTAC_PYTHON2_HOME/bin to
         PATH, for mol_to_params()'s bare 'python2.7 ...' call.
         SCRIPTS_FOL needs a trailing slash: rosetta.py concatenates it with no separator.
-        rosettaHome/obDir: pass prepareRosettaScriptsShim()/preparePRosettaCBabelShim()'s
-        own output - required in practice, raw OPENBABEL_HOME/bin has no 'babel' binary. """
-        rosettaFol = rosettaHome or RosettaPlugin.getVar(ROSETTA_DIC['home'])
-        if rosettaFol is None:
-            raise FileNotFoundError(
-                f"{ROSETTA_DIC['home']} is not set. Point it to your Rosetta installation.")
-        if obDir is None:
-            raise FileNotFoundError(
-                "obDir is required: pass Plugin.preparePRosettaCBabelShim()'s own output.")
+        rosettaHome/obDir: the output of prepareRosettaScriptsShim() and
+        preparePRosettaCBabelShim(). """
         python2Home = cls._requireToolHome(PROSETTAC_PYTHON2_DIC)
         environ = {
             'PATCHDOCK': cls._requirePatchdockHome(),
             'OB': os.path.abspath(obDir),
             'SCRIPTS_FOL': os.path.abspath(cls.getPRosettaCScript()) + os.sep,
-            'ROSETTA_FOL': os.path.abspath(rosettaFol),
+            'ROSETTA_FOL': os.path.abspath(rosettaHome),
             'PATH': os.path.join(python2Home, 'bin') + os.pathsep + os.environ.get('PATH', ''),
         }
         return environ

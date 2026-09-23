@@ -98,15 +98,6 @@ class _GuardedPipe(object):
     def read(self):
         return self._content
 
-    def readlines(self):
-        return self._content.splitlines(True)
-
-    def __iter__(self):
-        return iter(self.readlines())
-
-    def close(self):
-        return None
-
     def __enter__(self):
         return self
 
@@ -305,8 +296,6 @@ class _GuardedOs(object):
     the original code already handles (it is what happens when conetnt_score stays empty),
     instead of an IndexError that kills every pose being processed in parallel. """
 
-    _FALLBACK = _ZERO_SCORE
-
     def __init__(self, realOs):
         self._os = realOs
 
@@ -331,7 +320,7 @@ class _GuardedOs(object):
             _warnCapped('empty-output',
                         '[protac] WARNING: no output from shell command, using 0 instead: '
                         '%s\n' % cmd)
-            content = self._FALLBACK
+            content = _ZERO_SCORE
         return _GuardedPipe(content)
 
 
