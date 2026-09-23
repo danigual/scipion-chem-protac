@@ -25,13 +25,16 @@
 # *
 # **************************************************************************
 
+import glob
 import os
+import shutil
 import subprocess
 
 import pyworkflow.utils as pwutils
 from scipion.install.funcs import InstallHelper
 
 from pwchem import Plugin as pwchemPlugin
+from pwchem import constants as pwchemConstants
 from rosetta import Plugin as RosettaPlugin, ROSETTA_DIC
 
 from .constants import *
@@ -61,11 +64,17 @@ class Plugin(pwchemPlugin):
         cls._defineEmVar(FCC_DIC['home'], cls.getEnvName(FCC_DIC))
         cls._defineEmVar(PROTAC_MODEL_DIC['home'], cls.getEnvName(PROTAC_MODEL_DIC))
         cls._defineEmVar(PROTAC_MODEL_PYTHON_DIC['home'], cls.getEnvName(PROTAC_MODEL_PYTHON_DIC))
+        cls._defineEmVar(PROSETTAC_DIC['home'], cls.getEnvName(PROSETTAC_DIC))
+        cls._defineEmVar(PROSETTAC_PYTHON_DIC['home'], cls.getEnvName(PROSETTAC_PYTHON_DIC))
+        cls._defineEmVar(PROSETTAC_PYTHON2_DIC['home'], cls.getEnvName(PROSETTAC_PYTHON2_DIC))
+        # _defineVar, not _defineEmVar: must be able to stay None so
+        # _requirePatchdockHome() can tell "not installed" apart from "installed".
+        cls._defineVar(PATCHDOCK_DIC['home'], None)
 
     @classmethod
     def defineBinaries(cls, env):
-        # Rosetta excluded on purpose: its license needs a personal academic
-        # registration, and ROSETTA_HOME is scipion-chem-rosetta's own responsibility.
+        # Rosetta and PatchDock excluded on purpose: both need a personal academic
+        # registration. ROSETTA_HOME is scipion-chem-rosetta's own responsibility.
         cls.addFrodockPackage(env)
         cls.addADFRSuitePackage(env)
         cls.addVinaPackage(env)
@@ -73,6 +82,9 @@ class Plugin(pwchemPlugin):
         cls.addFCCPackage(env)
         cls.addProtacModelPackage(env)
         cls.addProtacModelPythonPackage(env)
+        cls.addProsettaCPackage(env)
+        cls.addProsettaCPythonPackage(env)
+        cls.addProsettaCPython2Package(env)
 
     # ---------------------------- Package installers (InstallHelper) -------------
     @classmethod
@@ -221,6 +233,55 @@ class Plugin(pwchemPlugin):
         installer.addPackage(env, dependencies=['conda'], default=default)
 
     @classmethod
+    def addProsettaCPackage(cls, env, default=True):
+        """ Clones LondonLab/PRosettaC itself, public repo, no build step. """
+        installer = InstallHelper(PROSETTAC_DIC['name'], packageHome=cls.getVar(PROSETTAC_DIC['home']),
+                                  packageVersion=PROSETTAC_DIC['version'])
+        installer.getCloneCommand(
+            'https://github.com/LondonLab/PRosettaC.git', binaryFolderName=PROSETTAC_DIC['name'],
+            targeName=f"{PROSETTAC_DIC['name']}_cloned")
+        installer.addPackage(env, dependencies=['git'], default=default)
+
+    @classmethod
+    def addProsettaCPythonPackage(cls, env, default=True):
+        """ Py3 + RDKit + numpy + scikit-learn conda env for protac_lib.py's own code. """
+        installer = InstallHelper(PROSETTAC_PYTHON_DIC['name'],
+                                  packageHome=cls.getVar(PROSETTAC_PYTHON_DIC['home']),
+                                  packageVersion=PROSETTAC_PYTHON_DIC['version'])
+        installer.getCondaEnvCommand(
+            binaryName=PROSETTAC_PYTHON_DIC['name'], binaryVersion=PROSETTAC_PYTHON_DIC['version'],
+            pythonVersion='3.10'
+        ).addCommand(
+            f"{cls.getEnvActivationCommand(PROSETTAC_PYTHON_DIC)} && "
+            "conda install -y -c conda-forge rdkit numpy scikit-learn",
+            targetName=f"{PROSETTAC_PYTHON_DIC['name']}_installed"
+        ).addCommand(
+            # Same symlink fix as addVinaPackage above.
+            f"{cls.getEnvActivationCommand(PROSETTAC_PYTHON_DIC)} && "
+            f"rm -rf {cls.getVar(PROSETTAC_PYTHON_DIC['home'])} && "
+            f"ln -s $CONDA_PREFIX {cls.getVar(PROSETTAC_PYTHON_DIC['home'])}",
+            targetName=f"{PROSETTAC_PYTHON_DIC['name']}_symlinked")
+        installer.addPackage(env, dependencies=['conda'], default=default)
+
+    @classmethod
+    def addProsettaCPython2Package(cls, env, default=True):
+        """ Bare Python 2.7 conda env for molfile_to_params.py (rosetta.py shells out to
+        the literal command 'python2.7 ...', so PROSETTAC_PYTHON2_HOME/bin must land on
+        PATH at call time - see getPRosettaCEnviron). """
+        installer = InstallHelper(PROSETTAC_PYTHON2_DIC['name'],
+                                  packageHome=cls.getVar(PROSETTAC_PYTHON2_DIC['home']),
+                                  packageVersion=PROSETTAC_PYTHON2_DIC['version'])
+        installer.getCondaEnvCommand(
+            binaryName=PROSETTAC_PYTHON2_DIC['name'], binaryVersion=PROSETTAC_PYTHON2_DIC['version'],
+            pythonVersion='2.7'
+        ).addCommand(
+            f"{cls.getEnvActivationCommand(PROSETTAC_PYTHON2_DIC)} && "
+            f"rm -rf {cls.getVar(PROSETTAC_PYTHON2_DIC['home'])} && "
+            f"ln -s $CONDA_PREFIX {cls.getVar(PROSETTAC_PYTHON2_DIC['home'])}",
+            targetName=f"{PROSETTAC_PYTHON2_DIC['name']}_symlinked")
+        installer.addPackage(env, dependencies=['conda'], default=default)
+
+    @classmethod
     def _requireToolHome(cls, toolDic):
         """ Return toolDic['home']'s configured value, raising if it is unset or does not
         exist on disk. Shared by the getXProgram() helpers below so the "not configured"
@@ -236,6 +297,19 @@ class Plugin(pwchemPlugin):
                 f"installation (got: {home}). Install it with 'scipion3 installb "
                 f"{cls.getEnvName(toolDic)}', or set the variable (e.g. in scipion.conf "
                 "or as a shell environment variable) to your own installation.")
+        return home
+
+    @classmethod
+    def _requirePatchdockHome(cls):
+        """ Like _requireToolHome, but PatchDock isn't scipion3-installable, so the error
+        points at manual install instead of 'scipion3 installb'. """
+        home = cls.getVar(PATCHDOCK_DIC['home'])
+        if home is None or not os.path.isdir(home):
+            raise FileNotFoundError(
+                f"{PATCHDOCK_DIC['home']} is not set. PatchDock needs a separate "
+                "academic license/registration (https://bioinfo3d.cs.tau.ac.il/PatchDock/) "
+                f"and cannot be installed automatically. Install it yourself and point "
+                f"{PATCHDOCK_DIC['home']} at it. Got: {home}.")
         return home
 
     @classmethod
@@ -269,21 +343,149 @@ class Plugin(pwchemPlugin):
             else:
                 raise FileNotFoundError(
                     f'Neither {intel} nor {gcc} is usable (checked with ldd).')
-            link = os.path.join(binDir, name)
-            if os.path.lexists(link):
-                os.remove(link)
-            os.symlink(os.path.abspath(chosen), link)
+            cls._forceSymlink(chosen, os.path.join(binDir, name))
 
         # run_protac_model.py copies soap.bin from this shim before running FRODOCK, so
         # it needs to be here too, not just the binaries above.
         soapSrc = os.path.join(home, 'bin', 'soap.bin')
         if not os.path.exists(soapSrc):
             raise FileNotFoundError(f'{soapSrc} not found under FRODOCK_HOME/bin.')
-        soapLink = os.path.join(binDir, 'soap.bin')
-        if os.path.lexists(soapLink):
-            os.remove(soapLink)
-        os.symlink(os.path.abspath(soapSrc), soapLink)
+        cls._forceSymlink(soapSrc, os.path.join(binDir, 'soap.bin'))
 
+        return targetDir
+
+    @classmethod
+    def _forceSymlink(cls, source, link):
+        """ Symlink source at link (absolute target), replacing whatever was there.
+        A real directory left by an earlier, differently shaped version of a shim is
+        removed too - os.remove() alone would fail on it with a bare IsADirectoryError
+        that says nothing about which shim is stale. Never follows a symlink to a
+        directory: that one is unlinked, not emptied. """
+        os.makedirs(os.path.dirname(link), exist_ok=True)
+        if os.path.isdir(link) and not os.path.islink(link):
+            shutil.rmtree(link)
+        elif os.path.lexists(link):
+            os.remove(link)
+        os.symlink(os.path.abspath(source), link)
+        return link
+
+    @classmethod
+    def requireRosettaScriptsBinary(cls):
+        """ Path to a usable rosetta_scripts build under ROSETTA_HOME, raising if the
+        variable is unset, does not exist on disk, or holds no such binary. The isdir()
+        and binary checks are what _requireToolHome() does for our own tools; Rosetta
+        needs its own copy because its variable belongs to scipion-chem-rosetta.
+
+        Which build: PRosettaC hardcodes the .default. name, but a given installation may
+        ship only .static. (the prebuilt bundles) or only .mpi. - so any of them is
+        accepted here and the shim renames it. """
+        home = RosettaPlugin.getVar(ROSETTA_DIC['home'])
+        if home is None or not os.path.isdir(home):
+            raise FileNotFoundError(
+                f"{ROSETTA_DIC['home']} does not point to an existing Rosetta "
+                f'installation (got: {home}). Set it (e.g. in scipion.conf or as a shell '
+                'environment variable) to your own installation.')
+
+        binDir = os.path.join(home, 'main', 'source', 'bin')
+        for build in ROSETTA_SCRIPTS_BUILDS:
+            path = os.path.join(binDir, f'rosetta_scripts.{build}.linuxgccrelease')
+            if os.path.exists(path):
+                return path
+        # Anything else the build system may have produced (another compiler, a debug
+        # build...): taken rather than refused, since PRosettaC only needs *a*
+        # rosetta_scripts. Sorted so the choice is reproducible across runs.
+        others = sorted(glob.glob(os.path.join(binDir, 'rosetta_scripts.*')))
+        if others:
+            return others[0]
+        raise FileNotFoundError(
+            f'No rosetta_scripts binary found in {binDir}. PRosettaC needs a compiled '
+            'Rosetta, not just the source bundle.')
+
+    @classmethod
+    def prepareRosettaScriptsShim(cls, targetDir):
+        """ Build targetDir as a stand-in ROSETTA_FOL for PRosettaC: the same relative
+        layout its rosetta.py resolves its three entry points against
+        (main/source/bin/rosetta_scripts.default.linuxgccrelease,
+        main/source/scripts/python/public/molfile_to_params.py and
+        tools/protein_tools/scripts/clean_pdb.py), every entry being a symlink into the
+        real installation, which is never touched.
+
+        The shim exists because PRosettaC hardcodes the .default. name while a given
+        installation may ship the binary under another one (see
+        requireRosettaScriptsBinary). Everything else is passed straight through:
+        pointing ROSETTA_FOL at the real home instead would fix the other two entry
+        points but not the binary name, and a shim holding only the binary breaks them
+        (rs.clean() then fails on a missing .fasta, which says nothing about the real
+        cause).
+
+        XXX unverified: whether the binary resolves its own database/ via
+        /proc/self/exe (the main/database symlink is then redundant) or via argv[0] (it
+        is then what makes it work) - check on the VM before trusting real results. """
+        realHome = RosettaPlugin.getVar(ROSETTA_DIC['home'])
+        cls._forceSymlink(cls.requireRosettaScriptsBinary(), os.path.join(
+            targetDir, 'main', 'source', 'bin', 'rosetta_scripts.default.linuxgccrelease'))
+
+        # The other two entry points (molfile_to_params.py under main/source/scripts,
+        # clean_pdb.py under tools) plus the database the binary itself needs. Whole
+        # directories rather than single files, so a script reaching for a sibling of its
+        # own still finds it.
+        for relPath in (os.path.join('main', 'source', 'scripts'),
+                        os.path.join('main', 'database'), 'tools'):
+            source = os.path.join(realHome, relPath)
+            if not os.path.isdir(source):
+                raise FileNotFoundError(
+                    f'{source} not found under ROSETTA_HOME. PRosettaC needs the full '
+                    'Rosetta bundle (binaries, python scripts, tools and database), not '
+                    'just the binaries.')
+            cls._forceSymlink(source, os.path.join(targetDir, relPath))
+        return targetDir
+
+    @classmethod
+    def requireObabelBinary(cls):
+        """ pwchem installs OpenBabel as a named conda env, so OPENBABEL_HOME has no bin/:
+        resolve the binary inside the env instead. """
+        obabelBin = pwchemPlugin.getEnvPath(pwchemConstants.OPENBABEL_DIC, innerPath='bin/obabel')
+        if not os.path.exists(obabelBin):
+            raise FileNotFoundError(f"obabel not found at {obabelBin}. Is pwchem's "
+                                    'OpenBabel environment installed?')
+        return obabelBin
+
+    @classmethod
+    def preparePRosettaCBabelShim(cls, targetDir):
+        """ Build targetDir/babel, a wrapper translating PRosettaC's OpenBabel 2.x CLI
+        ('babel in out [-h]') into pwchem's obabel 3.1.1 ('obabel in -O out [-h]').
+        Covers the 3 invocation shapes PRosettaC's utils.py actually uses.
+
+        XXX unverified: whether obabel 3.1.1 reproduces babel 2.x's bond perception
+        closely enough for the downstream anchor-atom indices to still line up. """
+        obabelBin = cls.requireObabelBinary()
+        os.makedirs(targetDir, exist_ok=True)
+        wrapperPath = os.path.join(targetDir, 'babel')
+        activate = pwchemPlugin.getEnvActivationCommand(pwchemConstants.OPENBABEL_DIC)
+        script = (
+            '#!/usr/bin/env bash\n'
+            # Plain 'set -e': conda's own activation scripts read unset variables and
+            # pipe internally, so '-u'/'-o pipefail' would make this wrapper fail inside
+            # the activation rather than in the conversion it is meant to do.
+            'set -e\n'
+            # Activation is kept (rather than just calling the binary by path) because
+            # obabel resolves its format plugins and data through its environment. The
+            # binary is then called by absolute path, so PATH order cannot pick another
+            # obabel that happens to be installed.
+            f'{activate}\n'
+            f'OBABEL="{os.path.abspath(obabelBin)}"\n'
+            'IN="$1"; OUT="$2"; shift 2 || true\n'
+            # in==out (round-trip call) needs a temp file, can't overwrite while reading.
+            'if [ "$IN" = "$OUT" ]; then\n'
+            '  TMP="$(mktemp --suffix=".${OUT##*.}")"\n'
+            '  "$OBABEL" "$IN" -O "$TMP" "$@"\n'
+            '  mv "$TMP" "$OUT"\n'
+            'else\n'
+            '  "$OBABEL" "$IN" -O "$OUT" "$@"\n'
+            'fi\n')
+        with open(wrapperPath, 'w') as f:
+            f.write(script)
+        os.chmod(wrapperPath, 0o755)
         return targetDir
 
     @classmethod
@@ -375,6 +577,38 @@ class Plugin(pwchemPlugin):
             'PROTAC_MODEL_HOME': cls.getProtacModelScript(),
         }
         return {name: os.path.abspath(path) for name, path in environ.items()}
+
+    @classmethod
+    def getPRosettaCScript(cls, scriptName=''):
+        """ Path inside the PRosettaC checkout. No scriptName returns the repo root. """
+        home = os.path.join(cls._requireToolHome(PROSETTAC_DIC), PROSETTAC_DIC['name'])
+        return os.path.join(home, scriptName) if scriptName else home
+
+    @classmethod
+    def getPRosettaCEnviron(cls, rosettaHome=None, obDir=None):
+        """ Translate our *_HOME vars into PATCHDOCK/OB/SCRIPTS_FOL/ROSETTA_FOL - PRosettaC's
+        utils.py reads all 4 from os.environ at import time, so every phase needs all 4
+        regardless of what it actually uses. Also prepends PROSETTAC_PYTHON2_HOME/bin to
+        PATH, for mol_to_params()'s bare 'python2.7 ...' call.
+        SCRIPTS_FOL needs a trailing slash: rosetta.py concatenates it with no separator.
+        rosettaHome/obDir: pass prepareRosettaScriptsShim()/preparePRosettaCBabelShim()'s
+        own output - required in practice, raw OPENBABEL_HOME/bin has no 'babel' binary. """
+        rosettaFol = rosettaHome or RosettaPlugin.getVar(ROSETTA_DIC['home'])
+        if rosettaFol is None:
+            raise FileNotFoundError(
+                f"{ROSETTA_DIC['home']} is not set. Point it to your Rosetta installation.")
+        if obDir is None:
+            raise FileNotFoundError(
+                "obDir is required: pass Plugin.preparePRosettaCBabelShim()'s own output.")
+        python2Home = cls._requireToolHome(PROSETTAC_PYTHON2_DIC)
+        environ = {
+            'PATCHDOCK': cls._requirePatchdockHome(),
+            'OB': os.path.abspath(obDir),
+            'SCRIPTS_FOL': os.path.abspath(cls.getPRosettaCScript()) + os.sep,
+            'ROSETTA_FOL': os.path.abspath(rosettaFol),
+            'PATH': os.path.join(python2Home, 'bin') + os.pathsep + os.environ.get('PATH', ''),
+        }
+        return environ
 
     @classmethod
     def getPluginScript(cls, scriptName):

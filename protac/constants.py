@@ -74,3 +74,34 @@ MIN_POCKET_PAIRS = 10
 # that dict uses arbitrary lowercase codes for a different purpose (mutation wizards) that
 # fall outside BLOSUM62's alphabet and would silently break sequence alignment here.
 MODRES_TO_CANONICAL = {'PTR': 'Y', 'TPO': 'T', 'SEP': 'S', 'MSE': 'M'}
+
+# ---------------------------------- ProtPRosettaC ----------------------------------
+PROSETTAC_DIC = {'name': 'prosettac', 'version': 'latest', 'home': 'PROSETTAC_HOME'}
+
+# XXX: rdkit/numpy/scikit-learn versions unpinned, check conda-forge before installing.
+# TODO: replace with the versions actually installed, from
+# https://anaconda.org/conda-forge/rdkit, https://anaconda.org/conda-forge/scikit-learn
+# and https://anaconda.org/conda-forge/numpy. Until then the placeholder travels silently
+# into the conda env name (prosettac-python-XXX) and into this variable's default path
+# instead of failing loudly, so an env installed now has to be reinstalled under its real
+# name later.
+PROSETTAC_PYTHON_DIC = {'name': 'prosettac-python', 'version': 'XXX',
+                        'home': 'PROSETTAC_PYTHON_HOME'}
+
+# Own env, not PROTAC_MODEL_PYTHON_HOME: no RDKit needed here, avoids coupling to its
+# frozen 2016 pin. XXX: unverified if molfile_to_params.py also needs numpy.
+# TODO: read its imports in ROSETTA_HOME/main/source/scripts/python/public/ and, if numpy
+# is needed, add it here (https://anaconda.org/conda-forge/numpy) - the env is bare 2.7.
+PROSETTAC_PYTHON2_DIC = {'name': 'prosettac-python2', 'version': '2.7',
+                         'home': 'PROSETTAC_PYTHON2_HOME'}
+
+# Manual, like Rosetta (academic license) - but no sibling plugin owns it, so declared here.
+# TODO: fill in the version actually obtained from the registration form at
+# https://bioinfo3d.cs.tau.ac.il/PatchDock/. Nothing installs PatchDock automatically, so
+# this only shows up in messages, but it is still a placeholder standing in for a fact.
+PATCHDOCK_DIC = {'name': 'patchdock', 'version': 'XXX', 'home': 'PATCHDOCK_HOME'}
+
+# rosetta_scripts build suffixes, in the order the shim looks for them. PRosettaC's own
+# rosetta.py hardcodes the .default. name; a source build produces exactly that, the
+# bundle installed at the CNB only ships .static., and an MPI build only .mpi.
+ROSETTA_SCRIPTS_BUILDS = ['default', 'static', 'mpi']

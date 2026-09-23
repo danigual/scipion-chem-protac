@@ -5,4 +5,5 @@
 # **************************************************************************
 
 from .protocol_protac_model import ProtPROTACModel
+from .protocol_prosettac import ProtPRosettaC
 from .protocol_transplant_warhead import ProtPROTACTransplantWarhead
