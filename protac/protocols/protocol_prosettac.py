@@ -62,6 +62,7 @@ class ProtPRosettaC(EMProtocol):
     """
     _label = 'PROTAC ternary complex modeling (PRosettaC)'
     _devStatus = BETA
+    _possibleOutputs = {'outputTernaryModels': SetOfAtomStructsChem}
 
     # -------------------------- DEFINE param functions ----------------------
     def _defineParams(self, form):
@@ -352,7 +353,7 @@ class ProtPRosettaC(EMProtocol):
         return summary
 
     def _citations(self):
-        return []
+        return ['Zaidman2020']
 
     # --------------------------- UTILS functions ------------------------------
     def _runDriver(self, args):
