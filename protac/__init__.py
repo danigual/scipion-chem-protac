@@ -334,16 +334,20 @@ class Plugin(pwchemPlugin):
         cls._forceSymlink(cls.requireRosettaScriptsBinary(), os.path.join(
             targetDir, 'main', 'source', 'bin', 'rosetta_scripts.default.linuxgccrelease'))
 
-        # Whole directories, so scripts that import their siblings still work.
-        for relPath in (os.path.join('main', 'source', 'scripts'),
-                        os.path.join('main', 'database'), 'tools'):
-            source = os.path.join(realHome, relPath)
-            if not os.path.isdir(source):
+        # Whole directories, so scripts that import their siblings still work. Binary
+        # bundles keep tools/ under main/, source checkouts at the top level.
+        scripts = os.path.join('main', 'source', 'scripts')
+        database = os.path.join('main', 'database')
+        for relPath, candidates in ((scripts, [scripts]), (database, [database]),
+                                    ('tools', ['tools', os.path.join('main', 'tools')])):
+            sources = [os.path.join(realHome, c) for c in candidates
+                       if os.path.isdir(os.path.join(realHome, c))]
+            if not sources:
                 raise FileNotFoundError(
-                    f'{source} not found under ROSETTA_HOME. PRosettaC needs the full '
-                    'Rosetta bundle (binaries, python scripts, tools and database), not '
-                    'just the binaries.')
-            cls._forceSymlink(source, os.path.join(targetDir, relPath))
+                    f'{relPath} not found under ROSETTA_HOME ({realHome}). PRosettaC needs '
+                    'the full Rosetta bundle (binaries, python scripts, tools and '
+                    'database), not just the binaries.')
+            cls._forceSymlink(sources[0], os.path.join(targetDir, relPath))
         return targetDir
 
     @classmethod
