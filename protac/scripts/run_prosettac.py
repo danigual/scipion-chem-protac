@@ -65,7 +65,7 @@ def _normalizeHead(sdfFile, anchor):
 
 def _require(path, what):
     """ PRosettaC runs its tools with os.system and never checks them. """
-    if not os.path.exists(path):
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
         raise RuntimeError(f'{what} did not produce {path}, see the output above.')
 
 
@@ -76,15 +76,15 @@ def _dropRepeatedScoreHeaders(scoreFile):
         return
     with open(scoreFile) as f:
         lines = f.readlines()
-    headers, data = [], []
+    headers, data = {}, []
     for line in lines:
         fields = line.split()
-        if fields[:1] != ['SEQUENCE:'] and fields[1:2] != ['total_score']:
+        if fields[:1] == ['SEQUENCE:'] or fields[1:2] == ['total_score']:
+            headers.setdefault(fields[0], line)
+        else:
             data.append(line)
-        elif line not in headers:
-            headers.append(line)
     with open(scoreFile, 'w') as f:
-        f.writelines(headers + data)
+        f.writelines(list(headers.values()) + data)
 
 
 def _catFiles(parts, dest):
@@ -152,6 +152,13 @@ def runPrepare(args):
             _stageSimpleName(args.head2, 'Head1.sdf')]
     anchors = [args.anchor1 - 1, args.anchor2 - 1]  # form is 1-based, PRosettaC is 0-based
 
+    def clean(struct, chains):
+        # rs.clean() deletes the .fasta clean_pdb.py should have written.
+        try:
+            rs.clean(struct, chains)
+        except FileNotFoundError:
+            raise RuntimeError(f'clean_pdb.py failed on {struct}, see the output above.') from None
+
     ptParams = []
     for i in (0, 1):
         newHead = f'Head{i}_H.sdf'
@@ -166,7 +173,7 @@ def runPrepare(args):
                 '(a 2D file loses its bond orders on the way through PDB).')
         heads[i] = newHead
 
-        rs.clean(structs[i], chains[i])
+        clean(structs[i], chains[i])
         structs[i] = f"{structs[i].split('.')[0]}_{chains[i]}.pdb"
         _require(structs[i], 'clean_pdb.py')
         ptPdb, ptParam = rs.mol_to_params(heads[i], f'PT{i}', f'PT{i}')
@@ -175,7 +182,7 @@ def runPrepare(args):
         _catFiles([ptPdb, structs[i]], f'Side{i}.pdb')
         rs.relax(f'Side{i}.pdb', ptParam)
         _require(f'Side{i}_0001.pdb', 'Rosetta relax')
-        rs.clean(f'Side{i}_0001.pdb', chains[i])
+        clean(f'Side{i}_0001.pdb', chains[i])
         _require(f'Side{i}_0001_{chains[i]}.pdb', 'clean_pdb.py')
         structs[i] = f'Init{i}.pdb'
         _catFiles([ptPdb, f'Side{i}_0001_{chains[i]}.pdb'], structs[i])
@@ -294,7 +301,7 @@ def runClustering(args):
                                           str(args.rmsd), args.chain2])
     except SystemExit:
         raise RuntimeError('clustering.py stopped: a model and Init.pdb have a different '
-                           'number of CA atoms in chain %s.' % args.chain2)
+                           'number of CA atoms in chain %s.' % args.chain2) from None
     finally:
         os.chdir(workDir)
 

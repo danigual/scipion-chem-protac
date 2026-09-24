@@ -303,39 +303,36 @@ class ProtPRosettaC(EMProtocol):
     # --------------------------- INFO functions -----------------------------------
     def _validate(self):
         errors = []
-        overlap = set(self.chain1.get().strip()) & set(self.chain2.get().strip())
-        if overlap:
-            errors.append('"Structure 1/2 chain ID(s)" must not overlap (shared: '
-                          f'{"".join(sorted(overlap))}).')
+        chain1 = (self.chain1.get() or '').strip()
+        chain2 = (self.chain2.get() or '').strip()
+        if set(chain1) & set(chain2):
+            errors.append('"Structure 1/2 chain ID(s)" must not overlap.')
+        chains = chain1 + chain2
+        if chains and (not chains.isalnum() or chains != chains.upper()
+                       or set(chains) & set('XY')):
+            errors.append('Chain IDs must be uppercase letters or digits, and cannot be X '
+                          'or Y, which PRosettaC uses for the warheads.')
+        # clustering.py compares line[21] == chain, so a multi-chain value selects no atom.
+        if len(chain2) != 1:
+            errors.append(f'"Structure 2 chain ID" must be a single chain. Got: "{chain2}".')
 
-        if self.patchdockResults.get() < 1 or self.localNstruct.get() < 1:
-            errors.append('"PatchDock solutions to refine" and "Local docking models per '
-                          'solution" must be at least 1.')
+        if any((value or 0) < 1 for value in (self.patchdockResults.get(),
+                                                self.localNstruct.get(),
+                                                self.anchor1.get(), self.anchor2.get())):
+            errors.append('Sampling sizes and anchor atoms (1-based) must be at least 1.')
 
-        chains = self.chain1.get().strip() + self.chain2.get().strip()
-        if chains != chains.upper() or set(chains) & set('XY'):
-            errors.append('Chain IDs must be uppercase and cannot be X or Y, which '
-                          'PRosettaC uses for the warheads.')
-
-        if any(anchor is not None and anchor < 1
-               for anchor in (self.anchor1.get(), self.anchor2.get())):
-            errors.append('Anchor atoms are 1-based: they must be at least 1.')
-
-        if self.clusterTopLocal.get() > self.clusterTopScore.get():
+        topScore, topLocal = self.clusterTopScore.get(), self.clusterTopLocal.get()
+        if None not in (topScore, topLocal) and topLocal > topScore:
             errors.append('"Models to cluster by interface score" cannot be larger than '
                           '"Models to keep by total score".')
 
-        for heads, name in ((self.heads1, self.head1Name), (self.heads2, self.head2Name)):
+        for i, heads, name in ((1, self.heads1, self.head1Name), (2, self.heads2, self.head2Name)):
             if heads.get() is not None and name.get():
-                if name.get().strip() not in {mol.getMolName() for mol in heads.get()}:
-                    errors.append(f'No molecule named "{name.get().strip()}" in '
-                                  f'{heads.get()}.')
-
-        # clustering.py compares line[21] == chain, so a multi-chain value selects no atom.
-        if len(self.chain2.get().strip()) != 1:
-            errors.append('"Structure 2 chain ID" must be a single chain. '
-                          f'Got: "{self.chain2.get().strip()}".')
-
+                try:
+                    self._findMolByName(heads.get(), name.get().strip())
+                except ValueError:
+                    errors.append(f'"Structure {i} warhead name": no molecule named '
+                                  f'"{name.get().strip()}" in that set.')
         return errors
 
     def _summary(self):
