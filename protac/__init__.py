@@ -211,9 +211,10 @@ class Plugin(pwchemPlugin):
 
     @classmethod
     def addProsettaCPythonPackage(cls, env, default=True):
-        """ Py3 env with RDKit, numpy and scikit-learn for PRosettaC's own code. """
+        """ Py3 env for PRosettaC's own code. RDKit 2023.09 is built against numpy 1.x. """
         cls._addCondaEnvPackage(env, PROSETTAC_PYTHON_DIC, '3.10',
-                                'conda install -y -c conda-forge rdkit numpy scikit-learn',
+                                'conda install -y -c conda-forge rdkit=2023.09.6 '
+                                'numpy=1.26.4 scikit-learn=1.5.2',
                                 default=default)
 
     @classmethod

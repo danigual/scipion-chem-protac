@@ -66,10 +66,8 @@ MODRES_TO_CANONICAL = {'PTR': 'Y', 'TPO': 'T', 'SEP': 'S', 'MSE': 'M'}
 # ---------------------------------- ProtPRosettaC ----------------------------------
 PROSETTAC_DIC = {'name': 'prosettac', 'version': 'latest', 'home': 'PROSETTAC_HOME'}
 
-# XXX: rdkit/numpy/scikit-learn versions not pinned yet.
-# TODO: set the installed versions (conda-forge). The placeholder ends up in the env
-# name, so an env installed now will need reinstalling under the final one.
-PROSETTAC_PYTHON_DIC = {'name': 'prosettac-python', 'version': 'XXX',
+# Env version of our own; bump it when the pinned packages below change.
+PROSETTAC_PYTHON_DIC = {'name': 'prosettac-python', 'version': '1.0',
                         'home': 'PROSETTAC_PYTHON_HOME'}
 
 # Bare Python 2.7 for Rosetta's molfile_to_params.py, which only uses the standard
