@@ -76,8 +76,7 @@ PROSETTAC_PYTHON2_DIC = {'name': 'prosettac-python2', 'version': '2.7',
                          'home': 'PROSETTAC_PYTHON2_HOME'}
 
 # Installed by hand (academic license), like Rosetta.
-# TODO: set the installed version (https://bioinfo3d.cs.tau.ac.il/PatchDock/).
-PATCHDOCK_DIC = {'name': 'patchdock', 'version': 'XXX', 'home': 'PATCHDOCK_HOME'}
+PATCHDOCK_DIC = {'name': 'patchdock', 'version': '1.0', 'home': 'PATCHDOCK_HOME'}
 
 # rosetta_scripts builds, in the order the shim looks for them. PRosettaC expects
 # .default. (a source build); prebuilt bundles ship .static., MPI builds .mpi.
