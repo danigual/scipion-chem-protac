@@ -25,39 +25,28 @@
 # *
 # **************************************************************************
 
-# Plugin version. Same split as the rest of the ecosystem: the number lives here and
-# __init__.py only does '__version__ = ALPHA_VERSION'.
 ALPHA_VERSION = '0.1'
 
 # ------------------------------- Package dictionaries -------------------------------
-# FRODOCK is a separate external tool, used by the PROTAC-Model pipeline
-# for the initial global protein-protein docking step. 3.12 is the latest stable
-# release and the one PROTAC-Model's own README points at.
+# Global protein-protein docking for PROTAC-Model. 3.12 is the release its README uses.
 FRODOCK_DIC = {'name': 'frodock', 'version': '3.12', 'home': 'FRODOCK_HOME'}
 
-# Used later by filterPosesStep (PROTAC-Model's filter_frodock()): ADFRsuite binaries,
-# Vina, Voromqa, and FCC's clustering scripts. None of them is license-gated (unlike
-# Rosetta below), so these get real defineBinaries() via InstallHelper.
-# ADFRsuite's 1.0 is not a free choice: its download URL and the folder name its
-# installer extracts (ADFRsuite_x86_64Linux_1.0) both hardcode it.
+# Tools used by PROTAC-Model's pose filtering. ADFRsuite 1.0 is fixed by its download
+# URL and installer folder name.
 ADFRSUITE_DIC = {'name': 'adfrsuite', 'version': '1.0', 'home': 'ADFRSUITE_HOME'}
-# PROTAC-Model itself pins nothing here: its README still points at the pre-1.2
-# vina.scripps.edu download. 1.2.3 is chosen to match scipion-chem-autodock, and the
-# runtime patches in run_protac_model.py (uninitialised grid box in --score_only,
-# reworded score line) were checked against Vina's own source at 1.2.2, 1.2.3 and 1.2.5.
+# Same version as scipion-chem-autodock. The Vina fixes in run_protac_model.py were
+# checked against Vina's source for 1.2.2, 1.2.3 and 1.2.5.
 VINA_DIC = {'name': 'vina', 'version': '1.2.3', 'home': 'VINA_HOME'}
 VOROMQA_DIC = {'name': 'voromqa', 'version': '1.29.4816', 'home': 'VOROMQA_HOME'}
 FCC_DIC = {'name': 'fcc', 'version': 'latest', 'home': 'FCC_HOME'}
 
-# PROTAC-Model's own code (main.py, utils/*) is called directly, not reimplemented
-# Its code is genuine Python 2, so PROTAC_MODEL_PYTHON_HOME is a dedicated
-# Python 2.7+rdkit conda env, never scipion3's own.
+# PROTAC-Model is Python 2, so it gets its own Python 2.7 + RDKit env.
 PROTAC_MODEL_DIC = {'name': 'protac-model', 'version': 'latest', 'home': 'PROTAC_MODEL_HOME'}
 PROTAC_MODEL_PYTHON_DIC = {'name': 'protac-model-python', 'version': '2.7',
                            'home': 'PROTAC_MODEL_PYTHON_HOME'}
 
-# The 4 programs PROTAC-Model's own utils/frodock.py resolves, each shipped as an
-# intel/gcc build pair ('<name>' / '<name>_gcc').
+# The FRODOCK programs PROTAC-Model calls, each shipped as '<name>' (intel) and
+# '<name>_gcc'.
 FRODOCK_BINARIES = ['frodockgrid', 'frodock', 'frodockcluster', 'frodockview']
 
 # ---------------------------- ProtPROTACTransplantWarhead ----------------------------
@@ -69,39 +58,28 @@ CLASH_CUTOFF = 2.0
 # Minimum number of source pocket residues that must have an aligned equivalent in the
 # target for the pocket-restricted superposition to be considered reliable.
 MIN_POCKET_PAIRS = 10
-# Canonical (uppercase) one-letter code for residues that appear as HETATM in a PDB but
-# are actually part of the main chain. Deliberately NOT pwchem.utils.MODIFIED_RESIDUES3TO1:
-# that dict uses arbitrary lowercase codes for a different purpose (mutation wizards) that
-# fall outside BLOSUM62's alphabet and would silently break sequence alignment here.
+# One-letter codes for modified residues often stored as HETATM. pwchem's
+# MODIFIED_RESIDUES3TO1 uses lowercase codes that BLOSUM62 can't align.
 MODRES_TO_CANONICAL = {'PTR': 'Y', 'TPO': 'T', 'SEP': 'S', 'MSE': 'M'}
 
 # ---------------------------------- ProtPRosettaC ----------------------------------
 PROSETTAC_DIC = {'name': 'prosettac', 'version': 'latest', 'home': 'PROSETTAC_HOME'}
 
-# XXX: rdkit/numpy/scikit-learn versions unpinned, check conda-forge before installing.
-# TODO: replace with the versions actually installed, from
-# https://anaconda.org/conda-forge/rdkit, https://anaconda.org/conda-forge/scikit-learn
-# and https://anaconda.org/conda-forge/numpy. Until then the placeholder travels silently
-# into the conda env name (prosettac-python-XXX) and into this variable's default path
-# instead of failing loudly, so an env installed now has to be reinstalled under its real
-# name later.
+# XXX: rdkit/numpy/scikit-learn versions not pinned yet.
+# TODO: set the installed versions (conda-forge). The placeholder ends up in the env
+# name, so an env installed now will need reinstalling under the final one.
 PROSETTAC_PYTHON_DIC = {'name': 'prosettac-python', 'version': 'XXX',
                         'home': 'PROSETTAC_PYTHON_HOME'}
 
-# Own env, not PROTAC_MODEL_PYTHON_HOME: no RDKit needed here, avoids coupling to its
-# frozen 2016 pin. XXX: unverified if molfile_to_params.py also needs numpy.
-# TODO: read its imports in ROSETTA_HOME/main/source/scripts/python/public/ and, if numpy
-# is needed, add it here (https://anaconda.org/conda-forge/numpy) - the env is bare 2.7.
+# Bare Python 2.7 for Rosetta's molfile_to_params.py, which only uses the standard
+# library. Kept apart from PROTAC-Model's env to avoid its 2016 RDKit pin.
 PROSETTAC_PYTHON2_DIC = {'name': 'prosettac-python2', 'version': '2.7',
                          'home': 'PROSETTAC_PYTHON2_HOME'}
 
-# Manual, like Rosetta (academic license) - but no sibling plugin owns it, so declared here.
-# TODO: fill in the version actually obtained from the registration form at
-# https://bioinfo3d.cs.tau.ac.il/PatchDock/. Nothing installs PatchDock automatically, so
-# this only shows up in messages, but it is still a placeholder standing in for a fact.
+# Installed by hand (academic license), like Rosetta.
+# TODO: set the installed version (https://bioinfo3d.cs.tau.ac.il/PatchDock/).
 PATCHDOCK_DIC = {'name': 'patchdock', 'version': 'XXX', 'home': 'PATCHDOCK_HOME'}
 
-# rosetta_scripts build suffixes, in the order the shim looks for them. PRosettaC's own
-# rosetta.py hardcodes the .default. name; a source build produces exactly that, the
-# bundle installed at the CNB only ships .static., and an MPI build only .mpi.
+# rosetta_scripts builds, in the order the shim looks for them. PRosettaC expects
+# .default. (a source build); prebuilt bundles ship .static., MPI builds .mpi.
 ROSETTA_SCRIPTS_BUILDS = ['default', 'static', 'mpi']

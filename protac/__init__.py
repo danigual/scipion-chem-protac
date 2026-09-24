@@ -52,10 +52,8 @@ class Plugin(pwchemPlugin):
     @classmethod
     def _defineVariables(cls):
         """ Return and write a variable in the config file. """
-        # None of these tools is license-gated, so _defineEmVar wires each home to
-        # wherever defineBinaries()/InstallHelper installs it. Pointing any of them at an
-        # existing install by hand still works: an explicit value in scipion.conf (or in
-        # the environment) wins over the default composed here.
+        # Defaults point where defineBinaries() installs each tool; a value set in
+        # scipion.conf or the environment still wins.
         cls._defineEmVar(FRODOCK_DIC['home'], cls.getEnvName(FRODOCK_DIC))
         cls._defineEmVar(ADFRSUITE_DIC['home'], cls.getEnvName(ADFRSUITE_DIC))
         cls._defineEmVar(VINA_DIC['home'], cls.getEnvName(VINA_DIC))
@@ -88,15 +86,9 @@ class Plugin(pwchemPlugin):
     # ---------------------------- Package installers (InstallHelper) -------------
     @classmethod
     def addFrodockPackage(cls, env, default=True):
-        """ Downloads and unpacks FRODOCK. The tarball ships both the intel and the gcc
-        builds already compiled, so there is no build step - prepareFrodockBinDir() picks
-        whichever of the two actually loads on this machine.
-
-        The download URL is the target of the Download button on the vendor's page. It
-        carries a token that changes whenever they update the site, and a stale token is
-        answered with HTTP 200 and a short HTML error page rather than an error status,
-        so the download "succeeds" and writes something that is not a tarball. The gzip
-        check below is what turns that into a readable failure. """
+        """ Downloads FRODOCK's prebuilt intel and gcc binaries. The URL carries a token
+        that changes when the vendor updates the site, and a stale one returns HTTP 200
+        with an HTML page, hence the gzip check. """
         installer = InstallHelper(FRODOCK_DIC['name'], packageHome=cls.getVar(FRODOCK_DIC['home']),
                                   packageVersion=FRODOCK_DIC['version'])
         installer.addCommand(
@@ -232,13 +224,8 @@ class Plugin(pwchemPlugin):
 
     @classmethod
     def _requireToolHome(cls, toolDic):
-        """ Return toolDic['home']'s configured value, raising if it is unset or does not
-        exist on disk. Shared by the getXProgram() helpers below so the "not configured"
-        error is consistent across tools instead of duplicated once per tool.
-
-        The isdir() half is not redundant: _defineEmVar always composes a path under
-        EM_ROOT and so never yields None, meaning a tool that was simply never installed
-        would otherwise pass unnoticed all the way to a failing run. """
+        """ toolDic's home, raising if it is unset or missing on disk. _defineEmVar never
+        yields None, so the directory check is what catches a tool never installed. """
         home = cls.getVar(toolDic['home'])
         if home is None or not os.path.isdir(home):
             raise FileNotFoundError(
@@ -314,14 +301,9 @@ class Plugin(pwchemPlugin):
 
     @classmethod
     def requireRosettaScriptsBinary(cls):
-        """ Path to a usable rosetta_scripts build under ROSETTA_HOME, raising if the
-        variable is unset, does not exist on disk, or holds no such binary. The isdir()
-        and binary checks are what _requireToolHome() does for our own tools; Rosetta
-        needs its own copy because its variable belongs to scipion-chem-rosetta.
-
-        Which build: PRosettaC hardcodes the .default. name, but a given installation may
-        ship only .static. (the prebuilt bundles) or only .mpi. - so any of them is
-        accepted here and the shim renames it. """
+        """ A rosetta_scripts binary under ROSETTA_HOME. PRosettaC hardcodes the .default.
+        build, but installs often ship only .static. or .mpi., so any build is accepted
+        and the shim renames it. """
         home = RosettaPlugin.getVar(ROSETTA_DIC['home'])
         if home is None or not os.path.isdir(home):
             raise FileNotFoundError(
@@ -334,9 +316,7 @@ class Plugin(pwchemPlugin):
             path = os.path.join(binDir, f'rosetta_scripts.{build}.linuxgccrelease')
             if os.path.exists(path):
                 return path
-        # Anything else the build system may have produced (another compiler, a debug
-        # build...): taken rather than refused, since PRosettaC only needs *a*
-        # rosetta_scripts. Sorted so the choice is reproducible across runs.
+        # Any other build will do; sorted so the choice is reproducible.
         others = sorted(glob.glob(os.path.join(binDir, 'rosetta_scripts.*')))
         if others:
             return others[0]
@@ -346,32 +326,15 @@ class Plugin(pwchemPlugin):
 
     @classmethod
     def prepareRosettaScriptsShim(cls, targetDir):
-        """ Build targetDir as a stand-in ROSETTA_FOL for PRosettaC: the same relative
-        layout its rosetta.py resolves its three entry points against
-        (main/source/bin/rosetta_scripts.default.linuxgccrelease,
-        main/source/scripts/python/public/molfile_to_params.py and
-        tools/protein_tools/scripts/clean_pdb.py), every entry being a symlink into the
-        real installation, which is never touched.
-
-        The shim exists because PRosettaC hardcodes the .default. name while a given
-        installation may ship the binary under another one (see
-        requireRosettaScriptsBinary). Everything else is passed straight through:
-        pointing ROSETTA_FOL at the real home instead would fix the other two entry
-        points but not the binary name, and a shim holding only the binary breaks them
-        (rs.clean() then fails on a missing .fasta, which says nothing about the real
-        cause).
-
-        XXX unverified: whether the binary resolves its own database/ via
-        /proc/self/exe (the main/database symlink is then redundant) or via argv[0] (it
-        is then what makes it work) - check on the VM before trusting real results. """
+        """ Builds targetDir as a stand-in ROSETTA_FOL: symlinks into the real install
+        with the layout PRosettaC expects, exposing the binary under the .default. name.
+        The scripts, tools and database are linked too, since PRosettaC also resolves
+        molfile_to_params.py and clean_pdb.py against ROSETTA_FOL. """
         realHome = RosettaPlugin.getVar(ROSETTA_DIC['home'])
         cls._forceSymlink(cls.requireRosettaScriptsBinary(), os.path.join(
             targetDir, 'main', 'source', 'bin', 'rosetta_scripts.default.linuxgccrelease'))
 
-        # The other two entry points (molfile_to_params.py under main/source/scripts,
-        # clean_pdb.py under tools) plus the database the binary itself needs. Whole
-        # directories rather than single files, so a script reaching for a sibling of its
-        # own still finds it.
+        # Whole directories, so scripts that import their siblings still work.
         for relPath in (os.path.join('main', 'source', 'scripts'),
                         os.path.join('main', 'database'), 'tools'):
             source = os.path.join(realHome, relPath)
@@ -395,26 +358,18 @@ class Plugin(pwchemPlugin):
 
     @classmethod
     def preparePRosettaCBabelShim(cls, targetDir):
-        """ Build targetDir/babel, a wrapper translating PRosettaC's OpenBabel 2.x CLI
-        ('babel in out [-h]') into pwchem's obabel 3.1.1 ('obabel in -O out [-h]').
-        Covers the 3 invocation shapes PRosettaC's utils.py actually uses.
-
-        XXX unverified: whether obabel 3.1.1 reproduces babel 2.x's bond perception
-        closely enough for the downstream anchor-atom indices to still line up. """
+        """ Builds targetDir/babel, translating PRosettaC's OpenBabel 2.x calls
+        ('babel in out [-h]') into pwchem's obabel 3 ('obabel in -O out [-h]'). """
         obabelBin = cls.requireObabelBinary()
         os.makedirs(targetDir, exist_ok=True)
         wrapperPath = os.path.join(targetDir, 'babel')
         activate = pwchemPlugin.getEnvActivationCommand(pwchemConstants.OPENBABEL_DIC)
         script = (
             '#!/usr/bin/env bash\n'
-            # Plain 'set -e': conda's own activation scripts read unset variables and
-            # pipe internally, so '-u'/'-o pipefail' would make this wrapper fail inside
-            # the activation rather than in the conversion it is meant to do.
+            # No '-u'/pipefail: conda's activation scripts would trip them.
             'set -e\n'
-            # Activation is kept (rather than just calling the binary by path) because
-            # obabel resolves its format plugins and data through its environment. The
-            # binary is then called by absolute path, so PATH order cannot pick another
-            # obabel that happens to be installed.
+            # obabel finds its plugins through the env; the absolute path avoids picking
+            # another obabel from PATH.
             f'{activate}\n'
             f'OBABEL="{os.path.abspath(obabelBin)}"\n'
             'IN="$1"; OUT="$2"; shift 2 || true\n'
@@ -440,9 +395,7 @@ class Plugin(pwchemPlugin):
 
     @classmethod
     def getProtacModelPython(cls):
-        """ Path to PROTAC-Model's dedicated Python 2.7+RDKit interpreter. Only used to
-        check the env is installed. runCondaScript() activates the env instead of
-        launching this path directly. """
+        """ PROTAC-Model's Python 2.7 interpreter, only used to check the env exists. """
         home = cls._requireToolHome(PROTAC_MODEL_PYTHON_DIC)
         path = os.path.join(home, 'bin', 'python2')
         if not os.path.exists(path):
@@ -451,15 +404,9 @@ class Plugin(pwchemPlugin):
 
     @classmethod
     def getProtacModelEnviron(cls, frodockHome=None):
-        """ Translate our *_HOME variables into the bare names (FRODOCK, VINA, ...)
-        PROTAC-Model's own code reads from os.environ, as extraEnvDict for
-        runCondaScript(). ROSETTA is required even for a frodock-only run (its module is
-        imported unconditionally) and comes from RosettaPlugin, not our own vars.
-        frodockHome: pass prepareFrodockBinDir()'s shim to vet intel/gcc; omit for a raw
-        FRODOCK_HOME (e.g. from _validate(), which only checks the directory exists, not
-        that the binaries inside it actually load).
-        All paths are made absolute here, since the driver runs from extra/frodock/ or
-        extra/rosetta/, not the Scipion project directory a relative path would assume. """
+        """ Our *_HOME variables under the names PROTAC-Model reads (FRODOCK, VINA...),
+        as absolute paths. ROSETTA is needed even without refinement, because its module
+        is always imported. frodockHome: the shim from prepareFrodockBinDir(), if built. """
         rosettaHome = RosettaPlugin.getVar(ROSETTA_DIC['home'])
         if rosettaHome is None:
             raise FileNotFoundError(
@@ -485,13 +432,9 @@ class Plugin(pwchemPlugin):
 
     @classmethod
     def getPRosettaCEnviron(cls, rosettaHome, obDir):
-        """ Translate our *_HOME vars into PATCHDOCK/OB/SCRIPTS_FOL/ROSETTA_FOL - PRosettaC's
-        utils.py reads all 4 from os.environ at import time, so every phase needs all 4
-        regardless of what it actually uses. Also prepends PROSETTAC_PYTHON2_HOME/bin to
-        PATH, for mol_to_params()'s bare 'python2.7 ...' call.
-        SCRIPTS_FOL needs a trailing slash: rosetta.py concatenates it with no separator.
-        rosettaHome/obDir: the output of prepareRosettaScriptsShim() and
-        preparePRosettaCBabelShim(). """
+        """ The 4 variables PRosettaC reads at import time, plus the Python 2.7 env on PATH
+        for its bare 'python2.7' call. SCRIPTS_FOL needs a trailing slash, as rosetta.py
+        appends to it directly. rosettaHome/obDir: the two shims. """
         python2Home = cls._requireToolHome(PROSETTAC_PYTHON2_DIC)
         environ = {
             'PATCHDOCK': cls._requirePatchdockHome(),

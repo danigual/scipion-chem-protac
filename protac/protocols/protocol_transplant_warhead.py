@@ -26,16 +26,8 @@
 # **************************************************************************
 
 """
-Transplants a small-molecule warhead from a "source" structure that already has it
-bound onto a homologous "target" structure that doesn't (e.g. an apo crystal structure
-of the same protein, or of a different isoform), by superposing the two on their binding
-pocket - restricted to the residues near the warhead in the source, matched to the
-target by sequence alignment rather than residue numbering, since homologs commonly
-have different residue numbering.
-
-Thin wrapper around protac.utils.transplant, which does all the actual geometry/PDB
-text work: this module only translates Scipion inputs (AtomStruct pointers, form
-parameters) into file paths and the module's TransplantReport into Scipion objects.
+Copies a bound warhead from a holo structure onto a homologous apo structure by
+superposing their binding pockets. The geometry lives in protac.utils.transplant.
 """
 
 import dataclasses
@@ -59,14 +51,9 @@ from protac.utils.transplant import (runTransplant, rewriteModifiedResiduesAsAto
 
 class ProtPROTACTransplantWarhead(EMProtocol):
     """
-    Transplants a bound warhead from a source structure onto a homologous, apo target
-    structure, via sequence-alignment-guided, pocket-restricted structural superposition.
-
-    Scope: only transplant between structurally equivalent conformations. A genuine
-    conformational mismatch between the warhead and the target pocket (e.g. a type-II
-    inhibitor that needs a DFG-out-like conformation, transplanted onto a DFG-in target)
-    is expected to surface as clashes in the quality control below, but this protocol
-    does not attempt to diagnose or resolve the mismatch itself.
+    Transplants a bound warhead from a source structure onto a homologous apo target,
+    superposing only the pocket residues, matched by sequence alignment. Both pockets
+    must be in an equivalent conformation; a mismatch shows up as clashes.
     """
     _label = 'Warhead transplant (homology-guided)'
     _devStatus = BETA
@@ -91,10 +78,7 @@ class ProtPROTACTransplantWarhead(EMProtocol):
         group = form.addGroup('Target (apo)')
         group.addParam('targetStructure', params.PointerParam, pointerClass='AtomStruct',
                        allowsNull=False, label='Target structure (apo)',
-                       help='Homologous structure to receive the transplanted warhead. '
-                            'Its pocket residues (matched to the source pocket by '
-                            'sequence alignment, not by residue number) are used to '
-                            'restrict the superposition.')
+                       help='Homologous structure that receives the warhead.')
         group.addParam('targetChain', params.StringParam, default='A', allowsNull=False,
                        label='Target chain',
                        help='Chain ID of the protein in the target structure, as it '
@@ -113,24 +97,16 @@ class ProtPROTACTransplantWarhead(EMProtocol):
                        expertLevel=params.LEVEL_ADVANCED,
                        label='Minimum matched pocket residues',
                        help='Aborts if fewer source pocket residues have an aligned '
-                            'equivalent in the target: the superposition would not be '
-                            'reliable below this.')
+                            'equivalent in the target.')
 
     @classmethod
     def validateInstallation(cls):
-        """ Overrides the plugin-wide default, which checks Plugin._pathVars -
-        PROTAC_MODEL_HOME, a dependency of ProtPROTACModel that this protocol never
-        touches. Everything here (pwchem.utils, Biopython,
-        numpy) is already part of the scipion3 environment - nothing to validate. """
+        """ Needs no external tool, unlike the plugin-wide check. """
         return []
 
     # --------------------------- STEPS functions ------------------------------
     def _insertAllSteps(self):
-        # Every value that changes prepareInputsStep/transplantStep's output is passed
-        # as a funcArgs so Scipion's funcName+argsStr equality check (protocol.py) can
-        # tell a re-run with edited form values apart from a genuine resume - otherwise
-        # "Continue" after fixing e.g. a typo'd sourceLigandName would silently reuse the
-        # stale extra/ files from the first, wrong run.
+        # Form values go as step arguments so that editing them reruns the steps.
         prepArgs = [self.sourceChain.get(), self.targetChain.get(),
                    self.sourceLigandName.get()]
         prepId = self._insertFunctionStep(self.prepareInputsStep, *prepArgs,
@@ -143,12 +119,8 @@ class ProtPROTACTransplantWarhead(EMProtocol):
         self._insertFunctionStep(self.createOutputStep, prerequisites=[transplantId])
 
     def prepareInputsStep(self, sourceChain, targetChain, sourceLigandName):
-        """ Cleans the source/target PDBs down to a single protein chain (+ the named
-        warhead, for the source), then rewrites modified residues (PTR/TPO/SEP/MSE) as
-        ATOM. Modified residues are kept in cleanPDB's het2keep on purpose: cleanPDB
-        treats them as heteroatoms too (they aren't among the 20 standard residues
-        Biopython recognises), so without this they would be stripped out before
-        rewriteModifiedResiduesAsAtom ever saw them. """
+        """ Keeps one chain (plus the warhead in the source) and rewrites modified
+        residues as ATOM. They go in het2keep because cleanPDB treats them as HETATM. """
         sourceChain, targetChain = sourceChain.strip(), targetChain.strip()
         modResNames = list(MODRES_TO_CANONICAL)
         cleanPDB(self.sourceStructure.get().getFileName(), self._getCleanedFile('source'),
@@ -166,10 +138,8 @@ class ProtPROTACTransplantWarhead(EMProtocol):
 
     def transplantStep(self, sourceChain, targetChain, sourceLigandName, pocketCutoff,
                        clashCutoff, minPocketPairs):
-        """ Runs the pure alignment/superposition/QC algorithm, writes the transplanted
-        ligand and merges it into the target, and reports any clash - without aborting
-        the protocol, since a clash is a QC signal for the user to act on, not by
-        itself a broken run (matches the reference approach this generalizes). """
+        """ Superposes, writes the ligand into the target and warns about clashes
+        without failing. """
         sourceChain, targetChain = sourceChain.strip(), targetChain.strip()
         sourceLigandName = sourceLigandName.strip().upper()
         newCoords, report = runTransplant(
@@ -181,10 +151,6 @@ class ProtPROTACTransplantWarhead(EMProtocol):
         writeTransplantedLigand(self._getFinalFile('source'), sourceChain,
                                 sourceLigandName, targetChain,
                                 newCoords, self._getTransplantedLigandFile())
-        # hetatm2=True is defensive/documentational here, not load-bearing:
-        # writeTransplantedLigand only ever writes HETATM lines, and mergePDBs only
-        # rewrites lines starting with 'ATOM' - it is a no-op on this input, kept so the
-        # call reads correctly if writeTransplantedLigand's output format ever changes.
         mergePDBs(self._getFinalFile('target'), self._getTransplantedLigandFile(),
                  self._getOutputFile(), hetatm2=True)
 
@@ -195,19 +161,11 @@ class ProtPROTACTransplantWarhead(EMProtocol):
             self.warning(
                 f'{report.nClashes} clash(es) (< {clashCutoff} A) between the '
                 f'transplanted warhead and the target structure (min distance '
-                f'{report.minLigProtDistance:.2f} A). This structure likely fails the '
-                'acceptance criterion for downstream use. A frequent cause is a '
-                'conformational mismatch between the warhead and the target pocket '
-                "(e.g. a type-II inhibitor that needs a DFG-out-like conformation, "
-                'transplanted onto a DFG-in target) - this check flags the symptom '
-                'generically; it does not diagnose the specific structural motif '
-                'involved.')
+                f'{report.minLigProtDistance:.2f} A). The target pocket is probably in '
+                'a different conformation from the source one.')
 
     def createOutputStep(self):
-        """ Packages the merged PDB as an AtomStruct, with the transplanted warhead's
-        centroid as a dynamic '_siteCoords' attribute so a future wizard
-        can fill in ProtPROTACModel's manual siteCoords field
-        from it without re-parsing the structure. """
+        """ Output AtomStruct, with the warhead centroid stored as _siteCoords. """
         with open(self._getReportFile()) as f:
             report = json.load(f)
 
@@ -250,9 +208,6 @@ class ProtPROTACTransplantWarhead(EMProtocol):
         return summary
 
     def _citations(self):
-        # TODO: protac/bibtex.py doesn't exist yet, so any key
-        # returned here is silently dropped regardless - leaving this empty rather than
-        # guessing an unverified Biopython citation key.
         return []
 
     # --------------------------- UTILS functions ------------------------------

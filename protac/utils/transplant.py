@@ -26,22 +26,9 @@
 # **************************************************************************
 
 """
-Pure Python (no pyworkflow/pwem, only pwchem.utils for PDB line helpers and the
-standard-residue table) implementation of homology-guided warhead transplant: given a
-"source" structure with a bound small-molecule warhead and a homologous, apo "target"
-structure, superpose the two on their binding pocket (residues near the warhead in the
-source, matched to the target by sequence alignment rather than residue numbering) and
-carry the warhead's coordinates over.
-
-Kept deliberately outside protac/protocols/: everything here is plain geometry/text
-manipulation, testable without a Scipion project. The protocol that wraps this
-(ProtPROTACTransplantWarhead) is a thin layer translating Scipion inputs to file paths
-and this module's outputs to Scipion objects.
-
-Scope: only "transplant between equivalent conformations". A genuine conformational
-mismatch (e.g. a type-II warhead that needs a DFG-out-like pocket, transplanted onto a
-DFG-in target) is expected to surface as clashes here, but diagnosing *why* is out of
-scope - see ProtPROTACTransplantWarhead's clash warning.
+Homology-guided warhead transplant: superposes a holo source and an apo target on the
+pocket residues, matched by sequence alignment, and carries the warhead over. No
+Scipion objects here, so it can be tested on plain PDB files.
 """
 
 from dataclasses import dataclass
@@ -55,9 +42,7 @@ from pwchem.utils import RESIDUES3TO1, splitPDBLine, writePDBLine
 from protac.constants import (MODRES_TO_CANONICAL, POCKET_CUTOFF, CLASH_CUTOFF,
                               MIN_POCKET_PAIRS)
 
-# Residues that count as "main chain" for alignment purposes: the 20 standard amino
-# acids plus the handful of modified residues (PTR/TPO/SEP/MSE) that PDB files often
-# record as HETATM even though they are part of the sequence.
+# Standard amino acids plus modified residues that PDB files store as HETATM.
 _CHAIN_RESNAMES = {**RESIDUES3TO1, **MODRES_TO_CANONICAL}
 
 
@@ -67,8 +52,7 @@ def _resLetter(resname):
 
 
 def chainResidues(structure, chainId):
-    """ Amino-acid residues (standard or modified, see _CHAIN_RESNAMES) of a chain, in
-    order, restricted to those with a CA atom. """
+    """ Amino-acid residues of a chain that have a CA atom, in order. """
     chain = structure[0][chainId]
     return [res for res in chain if res.get_resname() in _CHAIN_RESNAMES and 'CA' in res]
 
@@ -89,8 +73,7 @@ class AlignmentResult:
 
 
 def alignedPairs(srcRes, tgtRes):
-    """ Global BLOSUM62 alignment of the two residue lists' sequences, returned as
-    pairs of aligned Bio.PDB.Residue objects (positions aligned to a gap are dropped). """
+    """ Global BLOSUM62 alignment, as pairs of aligned residues (gaps dropped). """
     aligner = PairwiseAligner()
     aligner.substitution_matrix = substitution_matrices.load('BLOSUM62')
     aligner.open_gap_score = -11
@@ -131,10 +114,8 @@ class SuperpositionResult:
 
 
 def superposePocket(pairs, pocket, minPairs=MIN_POCKET_PAIRS):
-    """ Restricts `pairs` to the ones whose source residue is in `pocket`, and
-    superposes their CA atoms (target <- source). Raises ValueError if fewer than
-    `minPairs` pocket residues have an aligned target equivalent - the superposition
-    would not be reliable below that. """
+    """ Superposes the CA atoms of the pocket pairs (source onto target). Raises
+    ValueError if fewer than `minPairs` pairs are available. """
     pocketPairs = [(a, b) for a, b in pairs if a in pocket]
     if len(pocketPairs) < minPairs:
         raise ValueError(
@@ -174,8 +155,6 @@ def centroid(coords):
 
 @dataclass
 class TransplantReport:
-    """ Everything the algorithm can report about the run, structured so the protocol
-    can log/summarize it without re-running or re-parsing anything. """
     identityPct: float
     nAlignedPairs: int
     nPocketSource: int
@@ -190,13 +169,8 @@ class TransplantReport:
 def runTransplant(sourcePdb, sourceChain, ligResname, targetPdb, targetChain,
                   pocketCutoff=POCKET_CUTOFF, clashCutoff=CLASH_CUTOFF,
                   minPocketPairs=MIN_POCKET_PAIRS):
-    """ Runs the full pure-geometry pipeline (parse -> align -> pocket -> superpose ->
-    transplant -> QC). Returns (newLigCoords: np.ndarray[n,3], report: TransplantReport).
-
-    Does not write any output file: building the final merged PDB mixes these new
-    coordinates with text already written elsewhere (chain reassignment, HETATM
-    formatting) - see writeTransplantedLigand() and pwchem.utils.mergePDBs, both meant
-    to be called by the protocol after this. """
+    """ Align, superpose the pocket, move the ligand and check clashes. Returns
+    (newLigCoords, TransplantReport) and writes nothing. """
     parser = PDBParser(QUIET=True)
     src = parser.get_structure('src', sourcePdb)
     tgt = parser.get_structure('tgt', targetPdb)
@@ -231,13 +205,8 @@ def runTransplant(sourcePdb, sourceChain, ligResname, targetPdb, targetChain,
 
 
 def rewriteModifiedResiduesAsAtom(inPdb, outPdb, chainId):
-    """ Copies the ATOM/HETATM records of `chainId` from inPdb to outPdb, rewriting
-    HETATM records of modified residues (MODRES_TO_CANONICAL) as ATOM - they are main
-    chain, not ligands, and pwchem.utils.cleanPDB has no option to do this itself, so
-    left as HETATM they would be dropped by any later hetatm=True cleaning and would
-    otherwise contaminate a HETATM-only warhead centroid/selection. Also drops alternate
-    (non-primary) altloc records and hydrogens: cleanPDB does not handle either.
-    Any non-ATOM/HETATM line (headers, TER, END...) is passed through unchanged. """
+    """ Copies the records of `chainId`, writing modified residues as ATOM and
+    dropping hydrogens and secondary altlocs, which cleanPDB does not handle. """
     with open(inPdb) as fIn, open(outPdb, 'w') as fOut:
         for line in fIn:
             if not line.startswith(('ATOM', 'HETATM')):
@@ -260,11 +229,8 @@ def rewriteModifiedResiduesAsAtom(inPdb, outPdb, chainId):
 
 def writeTransplantedLigand(sourcePdb, sourceChain, ligResname, targetChain, newCoords,
                             outPdb):
-    """ Writes the ligand's HETATM records (as read from sourcePdb, chain sourceChain,
-    residue name ligResname - same selection criteria as ligandAtoms(), so the atom
-    order matches `newCoords`) with their coordinates replaced by `newCoords` and their
-    chain reassigned to `targetChain`, ready to be appended to the target structure via
-    pwchem.utils.mergePDBs(..., hetatm2=True). """
+    """ Writes the ligand HETATM records from sourcePdb with `newCoords` and chain
+    `targetChain`. Atoms are selected as in ligandAtoms(), so the order matches. """
     ligParts = []
     with open(sourcePdb) as f:
         for line in f:
