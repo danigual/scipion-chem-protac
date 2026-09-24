@@ -312,6 +312,25 @@ class ProtPRosettaC(EMProtocol):
             errors.append('"PatchDock solutions to refine" and "Local docking models per '
                           'solution" must be at least 1.')
 
+        chains = self.chain1.get().strip() + self.chain2.get().strip()
+        if chains != chains.upper() or set(chains) & set('XY'):
+            errors.append('Chain IDs must be uppercase and cannot be X or Y, which '
+                          'PRosettaC uses for the warheads.')
+
+        if any(anchor is not None and anchor < 1
+               for anchor in (self.anchor1.get(), self.anchor2.get())):
+            errors.append('Anchor atoms are 1-based: they must be at least 1.')
+
+        if self.clusterTopLocal.get() > self.clusterTopScore.get():
+            errors.append('"Models to cluster by interface score" cannot be larger than '
+                          '"Models to keep by total score".')
+
+        for heads, name in ((self.heads1, self.head1Name), (self.heads2, self.head2Name)):
+            if heads.get() is not None and name.get():
+                if name.get().strip() not in {mol.getMolName() for mol in heads.get()}:
+                    errors.append(f'No molecule named "{name.get().strip()}" in '
+                                  f'{heads.get()}.')
+
         # clustering.py compares line[21] == chain, so a multi-chain value selects no atom.
         if len(self.chain2.get().strip()) != 1:
             errors.append('"Structure 2 chain ID" must be a single chain. '

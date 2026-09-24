@@ -63,6 +63,30 @@ def _normalizeHead(sdfFile, anchor):
     return newAnchor
 
 
+def _require(path, what):
+    """ PRosettaC runs its tools with os.system and never checks them. """
+    if not os.path.exists(path):
+        raise RuntimeError(f'{what} did not produce {path}, see the output above.')
+
+
+def _dropRepeatedScoreHeaders(scoreFile):
+    """ Concurrent Rosetta jobs can each write the SEQUENCE:/SCORE: header, but
+    clustering.py only skips the first two lines. """
+    if not os.path.exists(scoreFile):
+        return
+    with open(scoreFile) as f:
+        lines = f.readlines()
+    headers, data = [], []
+    for line in lines:
+        fields = line.split()
+        if fields[:1] != ['SEQUENCE:'] and fields[1:2] != ['total_score']:
+            data.append(line)
+        elif line not in headers:
+            headers.append(line)
+    with open(scoreFile, 'w') as f:
+        f.writelines(headers + data)
+
+
 def _catFiles(parts, dest):
     with open(dest, 'wb') as out:
         for part in parts:
@@ -133,6 +157,7 @@ def runPrepare(args):
         newHead = f'Head{i}_H.sdf'
         anchors[i] = _normalizeHead(heads[i], anchors[i])
         utils.addH_sdf(heads[i], newHead)
+        _require(newHead, 'OpenBabel')
         anchors[i] = pl.translate_anchors(heads[i], newHead, anchors[i])
         if anchors[i] == -1:
             raise RuntimeError(
@@ -143,11 +168,15 @@ def runPrepare(args):
 
         rs.clean(structs[i], chains[i])
         structs[i] = f"{structs[i].split('.')[0]}_{chains[i]}.pdb"
+        _require(structs[i], 'clean_pdb.py')
         ptPdb, ptParam = rs.mol_to_params(heads[i], f'PT{i}', f'PT{i}')
+        _require(ptParam, 'molfile_to_params.py')
         ptParams.append(ptParam)
         _catFiles([ptPdb, structs[i]], f'Side{i}.pdb')
         rs.relax(f'Side{i}.pdb', ptParam)
+        _require(f'Side{i}_0001.pdb', 'Rosetta relax')
         rs.clean(f'Side{i}_0001.pdb', chains[i])
+        _require(f'Side{i}_0001_{chains[i]}.pdb', 'clean_pdb.py')
         structs[i] = f'Init{i}.pdb'
         _catFiles([ptPdb, f'Side{i}_0001_{chains[i]}.pdb'], structs[i])
 
@@ -256,12 +285,16 @@ def runClustering(args):
                            'clustering, got "%s".' % args.chain2)
 
     _catFiles(['Init0.pdb', 'Init1.pdb'], 'Init.pdb')
+    _dropRepeatedScoreHeaders(os.path.join(PATCHDOCK_RESULTS, 'score.sc'))
 
     workDir = os.getcwd()
     try:
         # clustering.main() can return without leaving Patchdock_Results/.
         clustering.main('clustering.py', [str(args.topScore), str(args.topLocal),
                                           str(args.rmsd), args.chain2])
+    except SystemExit:
+        raise RuntimeError('clustering.py stopped: a model and Init.pdb have a different '
+                           'number of CA atoms in chain %s.' % args.chain2)
     finally:
         os.chdir(workDir)
 
