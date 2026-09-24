@@ -121,10 +121,14 @@ class ProtPRosettaC(EMProtocol):
                        label='PROTAC SMILES',
                        help='SMILES of the full PROTAC. Each warhead must be an exact '
                             'substructure of it, or no conformation is generated.')
-        group.addParam('doFull', params.BooleanParam, default=False,
-                       label='Full run', help='1000 PatchDock solutions and 50 local '
-                            'docking models per solution (the published protocol), '
-                            'instead of 500 and 10.')
+        group.addParam('patchdockResults', params.IntParam, default=500,
+                       label='PatchDock solutions to refine',
+                       help='Best PatchDock solutions taken to local docking. The '
+                            'published protocol uses 1000.')
+        group.addParam('localNstruct', params.IntParam, default=10,
+                       label='Local docking models per solution',
+                       help='Rosetta local docking models per PatchDock solution. The '
+                            'published protocol uses 50.')
 
         group = form.addGroup('Advanced', expertLevel=params.LEVEL_ADVANCED)
         group.addParam('patchdockThreshold', params.FloatParam, default=2.0,
@@ -183,10 +187,10 @@ class ProtPRosettaC(EMProtocol):
         sampleDistId = self._insertFunctionStep(
             self.sampleDistStep, self.protacSmiles.get().strip(), prerequisites=[prepareId])
         patchdockId = self._insertFunctionStep(
-            self.patchdockStep, self.doFull.get(), self.patchdockThreshold.get(),
+            self.patchdockStep, self.patchdockResults.get(), self.patchdockThreshold.get(),
             prerequisites=[sampleDistId])
         localDockId = self._insertFunctionStep(
-            self.localDockingStep, self.doFull.get(), self.chain1.get().strip(),
+            self.localDockingStep, self.localNstruct.get(), self.chain1.get().strip(),
             self.chain2.get().strip(), prerequisites=[patchdockId])
         constraintId = self._insertFunctionStep(
             self.constraintConfStep, self.chain1.get().strip(), self.chain2.get().strip(),
@@ -230,20 +234,18 @@ class ProtPRosettaC(EMProtocol):
         """ Phase 3: linker distance sampling, PRosettaC's own pl.SampleDist(). """
         self._runDriver(f'--phase sampledist --smiles "{protacSmiles}"')
 
-    def patchdockStep(self, doFull, threshold):
+    def patchdockStep(self, globalResults, threshold):
         """ Phase 4: PatchDock global docking under the sampled distance constraint.
         Previous outputs are removed first: utils.patchdock() fails if they exist. """
         cleanPath(self._getWorkDirFile('Patchdock_Results'))
         cleanPath(self._getWorkDirFile('Patchdock_cst'))
         cleanPath(self._getWorkDirFile('Patchdock_params.txt'))
 
-        globalResults = 1000 if doFull else 500
         self._runDriver(f'--phase patchdock --global-results {globalResults} '
                         f'--threshold {threshold}')
 
-    def localDockingStep(self, doFull, chain1, chain2):
+    def localDockingStep(self, nstruct, chain1, chain2):
         """ Phase 5: RosettaScripts local docking of every PatchDock solution. """
-        nstruct = 50 if doFull else 10
         self._runDriver(f'--phase localdocking --chain1 "{chain1}" --chain2 "{chain2}" '
                         f'--nstruct {nstruct} --threads {self.numberOfThreads.get()}')
 
@@ -305,6 +307,10 @@ class ProtPRosettaC(EMProtocol):
         if overlap:
             errors.append('"Structure 1/2 chain ID(s)" must not overlap (shared: '
                           f'{"".join(sorted(overlap))}).')
+
+        if self.patchdockResults.get() < 1 or self.localNstruct.get() < 1:
+            errors.append('"PatchDock solutions to refine" and "Local docking models per '
+                          'solution" must be at least 1.')
 
         # clustering.py compares line[21] == chain, so a multi-chain value selects no atom.
         if len(self.chain2.get().strip()) != 1:
