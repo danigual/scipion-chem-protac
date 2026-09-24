@@ -439,13 +439,15 @@ class Plugin(pwchemPlugin):
         """ The 4 variables PRosettaC reads at import time, plus the Python 2.7 env on PATH
         for its bare 'python2.7' call. SCRIPTS_FOL needs a trailing slash, as rosetta.py
         appends to it directly. rosettaHome/obDir: the two shims. """
+        # Appended, not prepended: conda activate swaps the current env's bin in place, so
+        # anything placed before it would shadow the activated env's own 'python'.
         python2Home = cls._requireToolHome(PROSETTAC_PYTHON2_DIC)
         environ = {
             'PATCHDOCK': cls._requirePatchdockHome(),
             'OB': os.path.abspath(obDir),
             'SCRIPTS_FOL': os.path.abspath(cls.getPRosettaCScript()) + os.sep,
             'ROSETTA_FOL': os.path.abspath(rosettaHome),
-            'PATH': os.path.join(python2Home, 'bin') + os.pathsep + os.environ.get('PATH', ''),
+            'PATH': os.environ.get('PATH', '') + os.pathsep + os.path.join(python2Home, 'bin'),
         }
         return environ
 
