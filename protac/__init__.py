@@ -223,11 +223,10 @@ class Plugin(pwchemPlugin):
         cls._addCondaEnvPackage(env, PROSETTAC_PYTHON2_DIC, '2.7', default=default)
 
     @classmethod
-    def _requireToolHome(cls, toolDic):
-        """ toolDic's home, raising if it is unset or missing on disk. _defineEmVar never
-        yields None, so the directory check is what catches a tool never installed. """
+    def _requireToolHome(cls, toolDic, binary=''):
+        """ toolDic's home, raising if it (or binary inside it) is missing on disk. """
         home = cls.getVar(toolDic['home'])
-        if home is None or not os.path.isdir(home):
+        if home is None or not os.path.exists(os.path.join(home, binary)):
             raise FileNotFoundError(
                 f"{toolDic['home']} does not point to an existing {toolDic['name']} "
                 f"installation (got: {home}). Install it with 'scipion3 installb "
@@ -415,7 +414,7 @@ class Plugin(pwchemPlugin):
         environ = {
             'FRODOCK': frodockHome or cls._requireToolHome(FRODOCK_DIC),
             'ADFRSUITE': cls._requireToolHome(ADFRSUITE_DIC),
-            'VINA': cls._requireToolHome(VINA_DIC),
+            'VINA': cls._requireToolHome(VINA_DIC, 'bin/vina'),
             'VOROMQA': cls._requireToolHome(VOROMQA_DIC),
             # The clone lives one level down, in a subfolder named after the package.
             'FCC': os.path.join(cls._requireToolHome(FCC_DIC), FCC_DIC['name']),

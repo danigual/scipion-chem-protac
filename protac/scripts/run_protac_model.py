@@ -175,7 +175,9 @@ def _runVinaScoreOnly(realOs, cmd, args, kwargs):
     try:
         output = pipe.read()
     finally:
-        pipe.close()
+        status = pipe.close()
+    if status and status >> 8 in (126, 127):
+        raise _FatalError('Vina cannot be run: %s' % output.strip())
 
     scoreMatch = _VINA_SCORE_RE.search(output)
     if scoreMatch is None:
@@ -220,6 +222,10 @@ class _GuardedOs(object):
         return _GuardedPipe(content)
 
 
+class _FatalError(Exception):
+    """ Not a per-pose failure: stops the whole run. """
+
+
 def _makeFailSafeFiltering(module, poseIndex):
     """ Wraps utils.<module>.filtering() so a failing pose is logged and skipped instead
     of killing the Pool. Safe because a pose only reaches results_voromqa as its last
@@ -232,6 +238,8 @@ def _makeFailSafeFiltering(module, poseIndex):
     def filtering(paraList):
         try:
             return original(paraList)
+        except _FatalError:
+            raise
         except Exception:
             try:
                 poseId = str(paraList[poseIndex])
