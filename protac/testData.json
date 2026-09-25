@@ -1,0 +1,8 @@
+{
+	"datasets": [],
+	"skippable": {
+		"gpu": [],
+		"dependencies": [],
+		"others": []
+	}
+}
