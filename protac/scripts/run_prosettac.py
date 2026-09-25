@@ -215,21 +215,108 @@ def runSampleDist(args):
     _writeState(state)
 
 
+def _patchdockParams(text, anchors, maxDist, threshold):
+    """ Edits the params.txt written by buildParams.pl. The restraint goes inline because
+    current PatchDock reads distanceConstraintsFile as residue-based cross-links, so the
+    atom-based file PRosettaC writes yields 0 restraints. The inline form only takes a
+    maximum distance; the minimum is applied afterwards on the solution list.
+    TODO: check on a real run that 'dist.' in Patchdock_output equals the anchor-anchor
+    distance measured in the matching pd.<i>.pdb (i.e. both atom indices land on the
+    anchors). XXX not verified yet. """
+    lines = []
+    for line in text.splitlines():
+        if line.startswith('distanceConstraintsFile') or line.startswith('distanceConstraints '):
+            line = '#' + line
+        elif line.startswith('clusterParams'):
+            fields = line.split()
+            if len(fields) != 5:
+                raise RuntimeError('Unexpected PatchDock clusterParams line: "%s"' % line)
+            line = ' '.join(fields[:4] + [str(threshold)])
+        lines.append(line)
+    lines.append('distanceConstraints %d %d %s' % (anchors[0], anchors[1], maxDist))
+    return '\n'.join(lines) + '\n'
+
+
+def _selectPatchdockSolutions(outputFile, minDist, maxResults):
+    """ Numbers of the best-ranked solutions whose restraint distance (last column before
+    '||') is at least minDist, up to maxResults. PatchDock has already clustered the
+    list, so this is the top N inside the window, not the top N under the maximum. """
+    selected = []
+    with open(outputFile) as f:
+        for line in f:
+            head, sep, _ = line.partition('||')
+            fields = head.split('|')
+            if not sep or not fields[0].strip().isdigit():
+                continue
+            try:
+                dist = float(fields[-1])
+            except ValueError:
+                raise RuntimeError('Cannot read the restraint distance in %s: "%s"'
+                                   % (outputFile, line.strip())) from None
+            if dist >= minDist:
+                selected.append(int(fields[0]))
+                if len(selected) == maxResults:
+                    break
+    return selected
+
+
+def _contiguousRanges(numbers):
+    """ [1, 2, 3, 7, 8] -> [(1, 3), (7, 8)] """
+    ranges = []
+    for n in numbers:
+        if ranges and n == ranges[-1][1] + 1:
+            ranges[-1] = (ranges[-1][0], n)
+        else:
+            ranges.append((n, n))
+    return ranges
+
+
 def runPatchdock(args):
-    """ Phase 4: PatchDock global docking. """
-    import utils
-
+    """ Phase 4: PatchDock global docking. Same steps as utils.patchdock(), except for how
+    the anchor distance window reaches PatchDock (see _patchdockParams). """
     state = _readState()
-    oneBasedAnchors = [a + 1 for a in state['anchors']]
-    numResults = utils.patchdock(state['initFiles'], oneBasedAnchors,
-                                 state['minValue'], state['maxValue'],
-                                 args.globalResults, args.threshold)
-    if numResults is None:
-        raise RuntimeError(
-            'PatchDock found no global docking solution within the geometrical '
-            'constraints (the anchor distance window from the sampling step).')
+    patchdock = os.environ['PATCHDOCK'].rstrip(os.sep)
+    structA, structB = state['initFiles']
+    anchors = [a + 1 for a in state['anchors']]  # PatchDock counts atoms from 1
 
-    state['numResults'] = numResults
+    _removeStale('.', 'Patchdock_output*', 'params.txt', 'patch_dock.log')
+    subprocess.run([os.path.join(patchdock, 'buildParams.pl'), structA, structB])
+    _require('params.txt', 'buildParams.pl')
+    with open('params.txt') as f:
+        text = f.read()
+    with open('Patchdock_params.txt', 'w') as f:
+        f.write(_patchdockParams(text, anchors, state['maxValue'], args.threshold))
+    os.remove('params.txt')
+
+    subprocess.run([os.path.join(patchdock, 'patch_dock.Linux'), 'Patchdock_params.txt',
+                    'Patchdock_output'])
+    _require('Patchdock_output', 'patch_dock.Linux')
+
+    solutions = _selectPatchdockSolutions('Patchdock_output', state['minValue'],
+                                          args.globalResults)
+    if not solutions:
+        raise RuntimeError(
+            'PatchDock found no global docking solution with the anchors %.1f-%.1f A apart '
+            '(the window from the sampling step). If patch_dock.log reports 0 distance '
+            'restraints read, the restraint did not reach PatchDock.'
+            % (state['minValue'], state['maxValue']))
+
+    for first, last in _contiguousRanges(sorted(solutions)):
+        subprocess.run([os.path.join(patchdock, 'transOutput.pl'), 'Patchdock_output',
+                        str(first), str(last)])
+
+    os.mkdir(PATCHDOCK_RESULTS)
+    for i, solution in enumerate(solutions, start=1):
+        src = 'Patchdock_output.%d.pdb' % solution
+        _require(src, 'transOutput.pl')
+        with open(src) as f:
+            pdb = f.read()
+        # main.py renames the second warhead's chain so each side has its own ID.
+        with open(os.path.join(PATCHDOCK_RESULTS, 'pd.%d.pdb' % i), 'w') as f:
+            f.write(pdb.replace('PT1 X', 'PT1 Y'))
+        os.remove(src)
+
+    state['numResults'] = len(solutions)
     _writeState(state)
 
 

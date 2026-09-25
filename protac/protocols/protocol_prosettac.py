@@ -237,9 +237,8 @@ class ProtPRosettaC(EMProtocol):
 
     def patchdockStep(self, globalResults, threshold):
         """ Phase 4: PatchDock global docking under the sampled distance constraint.
-        Previous outputs are removed first: utils.patchdock() fails if they exist. """
+        Previous outputs are removed first: the results directory cannot exist yet. """
         cleanPath(self._getWorkDirFile('Patchdock_Results'))
-        cleanPath(self._getWorkDirFile('Patchdock_cst'))
         cleanPath(self._getWorkDirFile('Patchdock_params.txt'))
 
         self._runDriver(f'--phase patchdock --global-results {globalResults} '
