@@ -52,7 +52,7 @@ from pwchem.objects import SetOfAtomStructsChem
 from pwchem.utils import convertToSdf
 
 from protac import Plugin
-from protac.utils.molecules import findMolByName
+from protac.utils.molecules import findMolByName, listMolNames
 from protac.constants import PROSETTAC_DIC, PROSETTAC_PYTHON_DIC, PROSETTAC_PYTHON2_DIC
 
 
@@ -395,6 +395,14 @@ class ProtPRosettaC(EMProtocol):
                 except (KeyError, IndexError, ValueError):
                     continue
         return scores
+
+    def getHead1Names(self):
+        """ Molecule names in the Structure 1 warhead set, listed by its name wizard. """
+        return listMolNames(self.heads1.get())
+
+    def getHead2Names(self):
+        """ See getHead1Names. """
+        return listMolNames(self.heads2.get())
 
     @staticmethod
     def _findMolByName(smallMolSet, name):

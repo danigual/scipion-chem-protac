@@ -39,3 +39,29 @@ def findMolByName(smallMolSet, name):
                          'with the "Operate set" protocol, and pick that set instead.')
     return matches[0]
 
+
+def listMolNames(smallMolSet):
+    """ Sorted distinct molecule names of smallMolSet, [] without a set. """
+    if smallMolSet is None:
+        return []
+    return sorted({mol.getMolName() for mol in smallMolSet})
+
+
+def ligandCentroid(structFile, resName):
+    """ Centroid (x, y, z) of the heteroatom residue resName in a PDB/mmCIF file. Fails
+    if it is missing or appears more than once: averaging several copies would give a
+    point between them. """
+    from Bio.PDB import MMCIFParser, PDBParser
+
+    parser = MMCIFParser(QUIET=True) if structFile.endswith('.cif') else PDBParser(QUIET=True)
+    model = next(iter(parser.get_structure('struct', structFile)))
+    residues = [res for res in model.get_residues()
+                if res.id[0].startswith('H_') and res.get_resname() == resName.strip().upper()]
+    if not residues:
+        raise ValueError(f'no heteroatom residue named "{resName}" in {structFile}.')
+    if len(residues) > 1:
+        chains = ', '.join(res.get_parent().id for res in residues)
+        raise ValueError(f'{len(residues)} copies of "{resName}" (chains {chains}); keep '
+                         'only the bound one in the structure.')
+    coords = [atom.coord for atom in residues[0]]
+    return tuple(float(sum(c[i] for c in coords) / len(coords)) for i in range(3))

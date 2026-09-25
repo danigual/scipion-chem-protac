@@ -56,7 +56,7 @@ from pwchem.objects import SetOfAtomStructsChem
 from pwchem.utils import cleanPDB, convertToSdf
 
 from protac import Plugin, PROTAC_MODEL_PYTHON_DIC
-from protac.utils.molecules import findMolByName
+from protac.utils.molecules import findMolByName, listMolNames
 
 
 class ProtPROTACModel(EMProtocol):
@@ -108,7 +108,8 @@ class ProtPROTACModel(EMProtocol):
                        validators=[params.NonEmptyCondition()],
                        label='Receptor interface site (X,Y,Z)',
                        help='Point on the receptor where the ternary complex is expected '
-                            'to form; FRODOCK restricts its search around it.\n\n'
+                            'to form; FRODOCK restricts its search around it. The wizard '
+                            'fills it from the receptor warhead named above.\n\n'
                             "It must be the centroid of the receptor's warhead HETATM "
                             'records, measured on the cleaned structure (warhead only) '
                             'when "Receptor warhead residue name" is set.')
@@ -391,6 +392,10 @@ class ProtPROTACModel(EMProtocol):
         return []
 
     # --------------------------- UTILS functions ------------------------------
+    def getE3LigandNames(self):
+        """ Molecule names in the E3 conformer set, listed by the name wizards. """
+        return listMolNames(self.e3Ligands.get())
+
     @staticmethod
     def _cleanReceptorOrTarget(inFile, outFile, ligandName):
         """ Water-stripped copy of inFile keeping only the named warhead, if any, among
