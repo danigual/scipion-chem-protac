@@ -4,16 +4,26 @@ PROTAC plugin
 
 **Documentation under development, sorry for the inconvenience**
 
-This is a **Scipion** plugin that models PROTAC-mediated protein-protein
-ternary complexes (POI - linker - E3 ligase) using
-`PROTAC-Model <https://github.com/gaoqiweng/PROTAC-Model>`_ (Gao et al.,
-Zhejiang University): FRODOCK global docking guided by a receptor-interface
-site point, filtering of the resulting poses by compatibility with the PROTAC
-linker geometry, and optional RosettaDock refinement of the surviving poses.
+This is a **Scipion** plugin to model PROTAC-mediated ternary complexes
+(protein of interest - PROTAC - E3 ligase). It wraps two independent modeling
+pipelines and adds a helper protocol to prepare their inputs.
 
 Current programs implemented:
 
-    - PROTAC-Model ternary complex modeling
+    - **PROTAC-Model** (`PROTAC-Model <https://github.com/gaoqiweng/PROTAC-Model>`_,
+      Zhejiang University): FRODOCK global docking guided by a site on the
+      receptor, filtering of the poses by compatibility with the PROTAC, and
+      optional RosettaDock refinement.
+    - **PRosettaC** (`PRosettaC <https://github.com/LondonLab/PRosettaC>`_,
+      Zaidman et al., 2020): PatchDock global docking constrained by the sampled
+      distance between the two anchor atoms, Rosetta local docking, constrained
+      PROTAC conformations and clustering of the final models.
+    - **Warhead transplant**: copies a warhead pose from a structure where it is
+      already bound to another structure of the same or a close homologous
+      protein, by superposing the binding pocket.
+
+Both modeling protocols need each protein with its warhead already bound, and a
+PROTAC SMILES in which each warhead is an exact substructure.
 
 ==========================
 Install this plugin
@@ -24,15 +34,20 @@ You will need to use `Scipion3 <https://scipion-em.github.io/docs/docs/scipion
 
 1. **Binary files**
 
-FRODOCK and Rosetta (used optionally for RosettaDock refinement) are **NOT**
-downloaded automatically with the plugin: both require accepting a license
-(a click-through agreement for FRODOCK, a personal academic login for
-Rosetta) that can't be scripted. Point ``FRODOCK_HOME`` (and ``ROSETTA_HOME``,
-via the ``scipion-chem-rosetta`` plugin) at your own downloads in
-``scipion.conf`` or your shell environment.
+Installed automatically by the plugin (``scipion3 installb <name>`` or the
+plugin manager): FRODOCK, ADFRsuite, Vina, VoroMQA, FCC, the PROTAC-Model and
+PRosettaC repositories, and the conda environments both pipelines run in.
 
-ADFRsuite, Vina, Voromqa and FCC have no such license gate and are installed
-automatically by the plugin's own ``defineBinaries()``.
+Two tools need a manual installation, because their licenses require a
+personal registration:
+
+- **Rosetta**, for PRosettaC and for the optional RosettaDock refinement of
+  PROTAC-Model. It is shared with the ``scipion-chem-rosetta`` plugin: point
+  ``ROSETTA_HOME`` at your installation.
+- **PatchDock** (https://bioinfo3d.cs.tau.ac.il/PatchDock/), for PRosettaC:
+  point ``PATCHDOCK_HOME`` at your installation.
+
+Both variables can be set in ``scipion.conf`` or in the shell environment.
 
 2. **Install the plugin in Scipion**
 
@@ -43,3 +58,12 @@ automatically by the plugin's own ``defineBinaries()``.
         git clone https://github.com/danigual/scipion-chem-protac.git
         cd scipion-chem-protac
         scipion3 installp -p . --devel
+
+3. **Tests**
+
+    .. code-block::
+
+        scipion3 test protac.tests.test_protac_model
+        scipion3 test protac.tests.test_prosettac
+
+The end-to-end tests skip themselves when the external tools are not installed.

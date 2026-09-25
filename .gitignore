@@ -1,8 +1,11 @@
 # Python compilation files
 *.pyc
+__pycache__/
 
-# Ignore temporary packaging folder
+# Ignore temporary packaging folders
 *.egg-info
+build/
+dist/
 
 # IDE files
 .idea

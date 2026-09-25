@@ -3,3 +3,4 @@ include *.rst
 include LICENSE
 recursive-include protac *.conf
 recursive-include protac/scripts *.py
+recursive-include protac/tests/data *
