@@ -361,12 +361,13 @@ class TestPRosettaCDriver(unittest.TestCase):
                                lambda cmds, cwd, threads, what: captured.append(cmds)):
             self._runWithStubs(self.driver.runConstraintConf, args)
 
-        script = os.path.join(self._scriptsFol, 'constraint_generation.py')
-        # Not a bare 'python': the Python 2 env is on PATH too.
+        # Each job goes through the driver itself, not a bare 'python': the Python 2 env
+        # is on PATH too.
+        job = f'{sys.executable} {os.path.abspath(_SCRIPT)} --constraint-job'
         self.assertEqual(sorted(captured[0]), [
-            f'{sys.executable} {script} ../Head0_H.sdf ../Head1_H.sdf ../protac.smi '
+            f'{job} ../Head0_H.sdf ../Head1_H.sdf ../protac.smi '
             f'12_10 pd.12_docking_0010.pdb AB',
-            f'{sys.executable} {script} ../Head0_H.sdf ../Head1_H.sdf ../protac.smi '
+            f'{job} ../Head0_H.sdf ../Head1_H.sdf ../protac.smi '
             f'1_1 pd.1_docking_0001.pdb AB'])
         # score.sc is appended to by every job, so the old one must go.
         self.assertFalse(os.path.exists(os.path.join(results, 'score.sc')))
@@ -466,6 +467,21 @@ class TestPRosettaCDriver(unittest.TestCase):
             self.driver._normalizeHead(sdf, out.GetNumAtoms())
         with self.assertRaises(RuntimeError):
             self.driver._normalizeHead(sdf, -1)
+
+    @unittest.skipUnless(importlib.util.find_spec('rdkit'),
+                         'RDKit is not installed in this environment; this test only runs '
+                         'where RDKit is, e.g. the PRosettaC Python env')
+    def test_patchEmbedMolecule_embeds_the_virtual_atoms(self):
+        from rdkit import Chem
+        from rdkit.Chem import rdDistGeom
+        original = rdDistGeom.EmbedMolecule
+        self.addCleanup(setattr, rdDistGeom, 'EmbedMolecule', original)
+
+        self.driver._patchEmbedMolecule()
+        # The same SMARTS molecule GenConstConf builds and embeds.
+        mol = Chem.MolFromSmarts('[#23][#23][#23]')
+        self.assertEqual(Chem.rdDistGeom.EmbedMolecule(mol), 0)
+        self.assertEqual(mol.GetNumConformers(), 1)
 
 
 class TestPRosettaCProtocol(BaseTest):

@@ -346,7 +346,6 @@ def _dockingSuffix(solution):
 def runConstraintConf(args):
     """ Phase 6: constraint_generation.py once per local docking solution. """
     state = _readState()
-    scriptsFol = os.environ['SCRIPTS_FOL'].rstrip(os.sep)
 
     solutions = sorted(os.path.basename(p) for p in
                       glob.glob(os.path.join(PATCHDOCK_RESULTS, '*_docking_????.pdb')))
@@ -360,14 +359,36 @@ def runConstraintConf(args):
                  'docked_*.sdf', 'PT_*.pdb', 'PT_*.params', 'combined_*.pdb')
 
     chains = args.chain1 + args.chain2
-    script = os.path.join(scriptsFol, 'constraint_generation.py')
     # Not a bare 'python': the Python 2 env is also on PATH.
-    commands = ['%s %s ../%s ../%s ../%s %s %s %s'
-                % (sys.executable, script, state['heads'][0], state['heads'][1],
-                   PROTAC_SMI, _dockingSuffix(s), s, chains)
+    commands = ['%s %s --constraint-job ../%s ../%s ../%s %s %s %s'
+                % (sys.executable, os.path.abspath(__file__), state['heads'][0],
+                   state['heads'][1], PROTAC_SMI, _dockingSuffix(s), s, chains)
                for s in solutions]
     _runCommandsInParallel(commands, PATCHDOCK_RESULTS, args.threads,
                            'constrained conformation generation')
+
+
+def _patchEmbedMolecule():
+    """ GenConstConf embeds a molecule built from SMARTS, which has no valences computed.
+    Recent RDKit versions refuse to embed it, so compute them first. """
+    from rdkit.Chem import rdDistGeom
+    embed = rdDistGeom.EmbedMolecule
+
+    def embedMolecule(mol, *args, **kwargs):
+        mol.UpdatePropertyCache(strict=False)
+        return embed(mol, *args, **kwargs)
+
+    rdDistGeom.EmbedMolecule = embedMolecule
+
+
+def _runConstraintGeneration(argv):
+    """ One constraint_generation.py job, run in this process so the patch applies. """
+    import runpy
+    _patchEmbedMolecule()
+    script = os.path.join(os.environ['SCRIPTS_FOL'].rstrip(os.sep),
+                          'constraint_generation.py')
+    sys.argv = [script] + argv
+    runpy.run_path(script, run_name='__main__')
 
 
 def runClustering(args):
@@ -420,6 +441,9 @@ def parseArgs():
 
 
 if __name__ == '__main__':
+    if sys.argv[1:2] == ['--constraint-job']:
+        _runConstraintGeneration(sys.argv[2:])
+        sys.exit(0)
     args = parseArgs()
     if args.phase == 'prepare':
         runPrepare(args)
