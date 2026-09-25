@@ -78,6 +78,12 @@ class TestTransplantWarhead(BaseTest):
         for part in parts:
             float(part)  # raises if not a valid coordinate
 
+        # The warhead is written into the target, on the target chain.
+        with open(outputStructure.getFileName()) as f:
+            ligLines = [l for l in f if l.startswith('HETATM') and l[17:20] == 'LIG']
+        self.assertEqual(len(ligLines), 4)
+        self.assertTrue(all(l[21] == 'A' for l in ligLines))
+
     def test_min_pocket_pairs_too_high_fails(self):
         args = {'sourceStructure': self.sourceStructure, 'sourceChain': 'A',
                'sourceLigandName': 'LIG', 'targetStructure': self.targetStructure,
@@ -85,3 +91,6 @@ class TestTransplantWarhead(BaseTest):
         prot = self.newProtocol(ProtPROTACTransplantWarhead, **args)
         with self.assertRaises(Exception):
             self.launchProtocol(prot)
+        # Fails for the right reason, not just anywhere.
+        self.assertTrue(prot.isFailed())
+        self.assertIn('need >= 100', prot.getErrorMessage())
