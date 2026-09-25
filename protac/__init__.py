@@ -47,7 +47,12 @@ __version__ = ALPHA_VERSION
 
 class Plugin(pwchemPlugin):
     _homeVar = PROTAC_MODEL_DIC['home']
-    _pathVars = [PROTAC_MODEL_DIC['home']]
+    # Each protocol runs its own validateInstallation(); this list only feeds the plugin
+    # manager. PatchDock is left out: it may legitimately be unset.
+    _pathVars = [dic['home'] for dic in (FRODOCK_DIC, ADFRSUITE_DIC, VINA_DIC, VOROMQA_DIC,
+                                         FCC_DIC, PROTAC_MODEL_DIC, PROTAC_MODEL_PYTHON_DIC,
+                                         PROSETTAC_DIC, PROSETTAC_PYTHON_DIC,
+                                         PROSETTAC_PYTHON2_DIC)]
 
     @classmethod
     def _defineVariables(cls):
@@ -407,15 +412,34 @@ class Plugin(pwchemPlugin):
         return path
 
     @classmethod
-    def getProtacModelEnviron(cls, frodockHome=None):
+    def checkProtacModelBinaries(cls):
+        """ Errors for every program PROTAC-Model calls that is missing, so a broken
+        install shows up before the run rather than hours into it. Assumes the homes
+        exist (getProtacModelEnviron checks that). """
+        frodock = os.path.join(cls.getVar(FRODOCK_DIC['home']), 'bin')
+        adfr = os.path.join(cls.getVar(ADFRSUITE_DIC['home']), 'bin')
+        fcc = os.path.join(cls.getVar(FCC_DIC['home']), FCC_DIC['name'])
+        required = [os.path.join(adfr, name) for name in
+                    ('obabel', 'obenergy', 'prepare_ligand', 'prepare_receptor', 'reduce')]
+        required += [os.path.join(cls.getVar(VINA_DIC['home']), 'bin', 'vina'),
+                     os.path.join(cls.getVar(VOROMQA_DIC['home']), 'bin', 'voronota-voromqa'),
+                     os.path.join(fcc, 'src', 'contact_fcc'),
+                     os.path.join(fcc, 'scripts', 'make_contacts.py'),
+                     os.path.join(frodock, 'soap.bin'),
+                     cls.getProtacModelScript(os.path.join('utils', 'frodock.py'))]
+        errors = [f'{path} not found.' for path in required if not os.path.exists(path)]
+        # Either build will do; prepareFrodockBinDir() picks one that loads.
+        for name in FRODOCK_BINARIES:
+            builds = [os.path.join(frodock, name), os.path.join(frodock, f'{name}_gcc')]
+            if not any(os.path.exists(build) for build in builds):
+                errors.append(f'Neither {builds[0]} nor {builds[1]} found.')
+        return errors
+
+    @classmethod
+    def getProtacModelEnviron(cls, frodockHome=None, needRosetta=False):
         """ Our *_HOME variables under the names PROTAC-Model reads (FRODOCK, VINA...),
-        as absolute paths. ROSETTA is needed even without refinement, because its module
-        is always imported. frodockHome: the shim from prepareFrodockBinDir(), if built. """
-        rosettaHome = RosettaPlugin.getVar(ROSETTA_DIC['home'])
-        if rosettaHome is None:
-            raise FileNotFoundError(
-                f"{ROSETTA_DIC['home']} is not set. Point it to your Rosetta "
-                "installation (e.g. in scipion.conf or as a shell environment variable).")
+        as absolute paths. ROSETTA only with needRosetta (refinement). frodockHome: the
+        shim from prepareFrodockBinDir(), if built. """
         environ = {
             'FRODOCK': frodockHome or cls._requireToolHome(FRODOCK_DIC),
             'ADFRSUITE': cls._requireToolHome(ADFRSUITE_DIC),
@@ -423,9 +447,17 @@ class Plugin(pwchemPlugin):
             'VOROMQA': cls._requireToolHome(VOROMQA_DIC),
             # The clone lives one level down, in a subfolder named after the package.
             'FCC': os.path.join(cls._requireToolHome(FCC_DIC), FCC_DIC['name']),
-            'ROSETTA': rosettaHome,
             'PROTAC_MODEL_HOME': cls.getProtacModelScript(),
         }
+        if needRosetta:
+            rosettaHome = RosettaPlugin.getVar(ROSETTA_DIC['home'])
+            if rosettaHome is None or not os.path.isdir(rosettaHome):
+                raise FileNotFoundError(
+                    f"{ROSETTA_DIC['home']} is not set or does not exist (got: "
+                    f"{rosettaHome}). Point it to your Rosetta "
+                    "installation (e.g. in scipion.conf or as a shell environment "
+                    "variable).")
+            environ['ROSETTA'] = rosettaHome
         return {name: os.path.abspath(path) for name, path in environ.items()}
 
     @classmethod
@@ -458,14 +490,15 @@ class Plugin(pwchemPlugin):
         return os.path.join(_PLUGIN_DIR, 'scripts', scriptName)
     
     @classmethod
-    def runCondaScript(cls, scriptPath, args, condaDic, extraEnvDict=None, cwd=None):
+    def runCondaScript(cls, protocol, scriptPath, args, condaDic, extraEnvDict=None,
+                       cwd=None):
         """ Run a Python script with condaDic's env activated first, rather than calling
         that env's interpreter by absolute path - needed because PROTAC-Model itself
         shells out to FCC's scripts as a bare 'python ...', which only finds the right
         Python 2.7 if the env's bin/ is on PATH. scriptPath is made absolute here since
         cwd is not the Scipion project directory. """
         program = f'{cls.getEnvActivationCommand(condaDic)} && python "{os.path.abspath(scriptPath)}"'
-        cls.runProgram(program, args, extraEnvDict=extraEnvDict, cwd=cwd)
+        cls.runProgram(protocol, program, args, extraEnvDict=extraEnvDict, cwd=cwd)
 
     @classmethod
     def getEnviron(cls):
@@ -474,11 +507,14 @@ class Plugin(pwchemPlugin):
         return pwutils.Environ(os.environ)
 
     @classmethod
-    def runProgram(cls, program, args=None, extraEnvDict=None, cwd=None):
-        """ Launch an external program with the given env/cwd. Not tool-specific.
-        cwd is resolved to absolute here so failures log an unambiguous path. """
+    def runProgram(cls, protocol, program, args=None, extraEnvDict=None, cwd=None):
+        """ Launch an external program through the protocol, so it goes to the run's log
+        and follows its host configuration. cwd is made absolute so failures log an
+        unambiguous path. """
         env = cls.getEnviron()
         if extraEnvDict is not None:
             env.update(extraEnvDict)
-        pwutils.runJob(None, program, args, env=env,
-                       cwd=os.path.abspath(cwd) if cwd else cwd)
+        # numberOfMpi=1: the drivers parallelise on their own, and an mpirun prefix would
+        # break the conda activation chain.
+        protocol.runJob(program, args, env=env, cwd=os.path.abspath(cwd) if cwd else cwd,
+                        numberOfMpi=1)

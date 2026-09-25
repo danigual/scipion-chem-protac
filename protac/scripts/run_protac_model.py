@@ -17,11 +17,20 @@ import shutil
 import sys
 import traceback
 
-# Repo root of the PROTAC-Model checkout, set by the protocol.
-sys.path.insert(0, os.environ['PROTAC_MODEL_HOME'])
-import utils.preprocess as pre
-import utils.frodock as fro
-import utils.rosetta as ros
+# PROTAC-Model's modules, imported by loadPipeline().
+pre = fro = ros = None
+
+
+def loadPipeline(withRosetta):
+    """ Deferred import: utils.rosetta reads ROSETTA at import time, and that variable is
+    only set when refining. """
+    global pre, fro, ros
+    # Repo root of the PROTAC-Model checkout, set by the protocol.
+    sys.path.insert(0, os.environ['PROTAC_MODEL_HOME'])
+    import utils.preprocess as pre
+    import utils.frodock as fro
+    if withRosetta:
+        import utils.rosetta as ros
 
 
 # ----------------------------- Robustness shims ------------------------------
@@ -270,7 +279,8 @@ def installRuntimeFixes():
     if not isinstance(pre.os, _GuardedOs):
         pre.os = _GuardedOs(pre.os)
     fro.filtering = _makeFailSafeFiltering(fro, 0)
-    ros.filtering = _makeFailSafeFiltering(ros, 4)
+    if ros is not None:
+        ros.filtering = _makeFailSafeFiltering(ros, 4)
 
 
 def _reportPoseFailures():
@@ -382,6 +392,7 @@ def parseArgs():
 
 if __name__ == '__main__':
     args = parseArgs()
+    loadPipeline(withRosetta=args.phase == 'refine')
     installRuntimeFixes()
     if args.phase == 'frodock':
         runFrodock(args)

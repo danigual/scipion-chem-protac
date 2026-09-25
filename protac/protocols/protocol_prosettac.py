@@ -52,6 +52,7 @@ from pwchem.objects import SetOfAtomStructsChem
 from pwchem.utils import convertToSdf
 
 from protac import Plugin
+from protac.utils.molecules import findMolByName
 from protac.constants import PROSETTAC_DIC, PROSETTAC_PYTHON_DIC, PROSETTAC_PYTHON2_DIC
 
 
@@ -331,9 +332,8 @@ class ProtPRosettaC(EMProtocol):
             if heads.get() is not None and name.get():
                 try:
                     self._findMolByName(heads.get(), name.get().strip())
-                except ValueError:
-                    errors.append(f'"Structure {i} warhead name": no molecule named '
-                                  f'"{name.get().strip()}" in that set.')
+                except ValueError as e:
+                    errors.append(f'"Structure {i} warhead name": {e}')
         return errors
 
     def _summary(self):
@@ -358,7 +358,7 @@ class ProtPRosettaC(EMProtocol):
     # --------------------------- UTILS functions ------------------------------
     def _runDriver(self, args):
         """ Runs one phase of run_prosettac.py from the work dir. """
-        Plugin.runCondaScript(Plugin.getPluginScript('run_prosettac.py'), args,
+        Plugin.runCondaScript(self, Plugin.getPluginScript('run_prosettac.py'), args,
                               PROSETTAC_PYTHON_DIC,
                               extraEnvDict=Plugin.getPRosettaCEnviron(
                                   self._getRosettaShimDir(), self._getBabelShimDir()),
@@ -398,10 +398,7 @@ class ProtPRosettaC(EMProtocol):
 
     @staticmethod
     def _findMolByName(smallMolSet, name):
-        for mol in smallMolSet:
-            if mol.getMolName() == name:
-                return mol.clone()
-        raise ValueError(f'No molecule named "{name}" found in {smallMolSet}.')
+        return findMolByName(smallMolSet, name)
 
     def _getWorkDir(self):
         return self._getExtraPath('prosettac')
