@@ -36,6 +36,7 @@ the original submits to PBS/SGE/SLURM run in a local thread pool instead.
 """
 
 import glob
+import json
 import os
 
 from pyworkflow.constants import BETA
@@ -175,32 +176,32 @@ class ProtPRosettaC(EMProtocol):
 
     # --------------------------- STEPS functions ------------------------------
     def _insertAllSteps(self):
-        convertId = self._insertFunctionStep(
-            self.convertInputStep, self.head1Name.get().strip(), self.head2Name.get().strip(),
-            self.heads1.get().getObjId(), self.heads2.get().getObjId(),
-            prerequisites=[])
-        prepareId = self._insertFunctionStep(
-            self.prepareStructuresStep,
-            self.structure1.get().getFileName(), self.chain1.get().strip(),
-            self.structure2.get().getFileName(), self.chain2.get().strip(),
-            self.anchor1.get(), self.anchor2.get(),
-            prerequisites=[convertId])
-        sampleDistId = self._insertFunctionStep(
-            self.sampleDistStep, self.protacSmiles.get().strip(), prerequisites=[prepareId])
-        patchdockId = self._insertFunctionStep(
-            self.patchdockStep, self.patchdockResults.get(), self.patchdockThreshold.get(),
-            prerequisites=[sampleDistId])
-        localDockId = self._insertFunctionStep(
-            self.localDockingStep, self.localNstruct.get(), self.chain1.get().strip(),
-            self.chain2.get().strip(), prerequisites=[patchdockId])
-        constraintId = self._insertFunctionStep(
-            self.constraintConfStep, self.chain1.get().strip(), self.chain2.get().strip(),
-            prerequisites=[localDockId])
-        clusteringId = self._insertFunctionStep(
-            self.clusteringStep, self.chain2.get().strip(), self.clusterTopScore.get(),
-            self.clusterTopLocal.get(), self.clusterRmsd.get(),
-            prerequisites=[constraintId])
-        self._insertFunctionStep(self.createOutputStep, prerequisites=[clusteringId])
+        # Scipion compares each step's arguments on its own when continuing a run, so every
+        # step also gets a key with its predecessors' arguments: changing an input then
+        # reruns the step that uses it and everything after it.
+        chain1, chain2 = self.chain1.get().strip(), self.chain2.get().strip()
+        stages = [
+            (self.convertInputStep,
+             [self.head1Name.get().strip(), self.head2Name.get().strip(),
+              self.heads1.get().getObjId(), self.heads2.get().getObjId()]),
+            (self.prepareStructuresStep,
+             [self.structure1.get().getFileName(), chain1,
+              self.structure2.get().getFileName(), chain2,
+              self.anchor1.get(), self.anchor2.get()]),
+            (self.sampleDistStep, [self.protacSmiles.get().strip()]),
+            (self.patchdockStep, [self.patchdockResults.get(), self.patchdockThreshold.get()]),
+            (self.localDockingStep, [self.localNstruct.get(), chain1, chain2]),
+            (self.constraintConfStep, [chain1, chain2]),
+            (self.clusteringStep, [chain2, self.clusterTopScore.get(),
+                                   self.clusterTopLocal.get(), self.clusterRmsd.get()]),
+            (self.createOutputStep, []),
+        ]
+        upstream, prerequisites = None, []
+        for step, args in stages:
+            key = [] if upstream is None else [json.dumps(upstream)]
+            stepId = self._insertFunctionStep(step, *args, *key, prerequisites=prerequisites)
+            upstream = (upstream or []) + args
+            prerequisites = [stepId]
 
     def convertInputStep(self, head1Name, head2Name, heads1Id, heads2Id):
         """ Writes both warheads as SDF under the work dir. heads1Id/heads2Id are unused:
@@ -214,7 +215,7 @@ class ProtPRosettaC(EMProtocol):
             convertToSdf(self, srcFile, sdfFile=outFile, overWrite=True)
 
     def prepareStructuresStep(self, struct1File, chain1, struct2File, chain2,
-                              anchor1, anchor2):
+                              anchor1, anchor2, upstream):
         """ Phases 1+2 (entangled in the original, can't be split): per-structure
         addH_sdf -> translate_anchors -> clean -> mol_to_params -> relax -> clean. """
         Plugin.prepareRosettaScriptsShim(self._getRosettaShimDir())
@@ -231,11 +232,11 @@ class ProtPRosettaC(EMProtocol):
                f'--head2 "{os.path.abspath(self._getHeadFile(2))}" --anchor2 {anchor2}')
         self._runDriver(args)
 
-    def sampleDistStep(self, protacSmiles):
+    def sampleDistStep(self, protacSmiles, upstream):
         """ Phase 3: linker distance sampling, PRosettaC's own pl.SampleDist(). """
         self._runDriver(f'--phase sampledist --smiles "{protacSmiles}"')
 
-    def patchdockStep(self, globalResults, threshold):
+    def patchdockStep(self, globalResults, threshold, upstream):
         """ Phase 4: PatchDock global docking under the sampled distance constraint.
         Previous outputs are removed first: the results directory cannot exist yet. """
         cleanPath(self._getWorkDirFile('Patchdock_Results'))
@@ -244,17 +245,17 @@ class ProtPRosettaC(EMProtocol):
         self._runDriver(f'--phase patchdock --global-results {globalResults} '
                         f'--threshold {threshold}')
 
-    def localDockingStep(self, nstruct, chain1, chain2):
+    def localDockingStep(self, nstruct, chain1, chain2, upstream):
         """ Phase 5: RosettaScripts local docking of every PatchDock solution. """
         self._runDriver(f'--phase localdocking --chain1 "{chain1}" --chain2 "{chain2}" '
                         f'--nstruct {nstruct} --threads {self.numberOfThreads.get()}')
 
-    def constraintConfStep(self, chain1, chain2):
+    def constraintConfStep(self, chain1, chain2, upstream):
         """ Phase 6: constrained PROTAC conformations for each local docking solution. """
         self._runDriver(f'--phase constraintconf --chain1 "{chain1}" --chain2 "{chain2}" '
                         f'--threads {self.numberOfThreads.get()}')
 
-    def clusteringStep(self, chain2, topScore, topLocal, rmsd):
+    def clusteringStep(self, chain2, topScore, topLocal, rmsd, upstream):
         """ Phase 7: clustering of the best models by moving-chain RMSD. Previous
         outputs are removed first: clustering.main() fails if they exist. """
         cleanPath(self._getResultsDir())
@@ -263,7 +264,7 @@ class ProtPRosettaC(EMProtocol):
         self._runDriver(f'--phase clustering --chain2 "{chain2}" --top-score {topScore} '
                         f'--top-local {topLocal} --cluster-rmsd {rmsd}')
 
-    def createOutputStep(self):
+    def createOutputStep(self, upstream):
         """ One AtomStruct per clustered model, with its cluster (1 is the best ranked)
         and its total Rosetta score. """
         clusterDirs = self._getClusterDirs()
