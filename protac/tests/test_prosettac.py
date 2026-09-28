@@ -95,6 +95,12 @@ def _writeExecutable(path, content):
     os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
+_needsRDKit = unittest.skipUnless(
+    importlib.util.find_spec('rdkit'),
+    'RDKit is not installed in this environment; this test only runs where RDKit is, '
+    'e.g. the PRosettaC Python env')
+
+
 @contextlib.contextmanager
 def _chdir(path):
     cwd = os.getcwd()
@@ -442,9 +448,7 @@ class TestPRosettaCDriver(unittest.TestCase):
                                                'test jobs')
 
     # ------------------------------ warhead normalisation ------------------------------
-    @unittest.skipUnless(importlib.util.find_spec('rdkit'),
-                         'RDKit is not installed in this environment; this test only runs '
-                         'where RDKit is, e.g. the PRosettaC Python env')
+    @_needsRDKit
     def test_normalizeHead_strips_H_and_remaps_the_anchor(self):
         from rdkit import Chem
         from rdkit.Chem import AllChem
@@ -468,9 +472,7 @@ class TestPRosettaCDriver(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.driver._normalizeHead(sdf, -1)
 
-    @unittest.skipUnless(importlib.util.find_spec('rdkit'),
-                         'RDKit is not installed in this environment; this test only runs '
-                         'where RDKit is, e.g. the PRosettaC Python env')
+    @_needsRDKit
     def test_patchEmbedMolecule_embeds_the_virtual_atoms(self):
         from rdkit import Chem
         from rdkit.Chem import rdDistGeom
@@ -482,6 +484,105 @@ class TestPRosettaCDriver(unittest.TestCase):
         mol = Chem.MolFromSmarts('[#23][#23][#23]')
         self.assertEqual(Chem.rdDistGeom.EmbedMolecule(mol), 0)
         self.assertEqual(mol.GetNumConformers(), 1)
+
+    def _writeLinkerConformations(self, smiles, n=5):
+        """ Heavy-atom conformations plus the virtual atoms file, as GenConstConf writes
+        them. """
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+        mol = Chem.MolFromSmiles(smiles)
+        confs = os.path.join(self.workDir, 'confs_1_1.sdf')
+        writer = Chem.SDWriter(confs)
+        for seed in range(1, n + 1):
+            self.assertEqual(AllChem.EmbedMolecule(mol, randomSeed=seed), 0)
+            writer.write(mol)
+        writer.close()
+        virtual = Chem.MolFromSmarts('[#23][#23][#23]')
+        virtual.UpdatePropertyCache(strict=False)
+        AllChem.EmbedMolecule(virtual, randomSeed=1)
+        vSdf = os.path.join(self.workDir, 'v_1_1.sdf')
+        writer = Chem.SDWriter(vSdf)
+        writer.write(virtual)
+        writer.close()
+        return confs, vSdf
+
+    @_needsRDKit
+    def test_addHydrogens_keeps_the_bond_orders_of_every_conformation(self):
+        from rdkit import Chem
+        smiles = 'O=C(NCCOCCN)c1ccc2c(c1)C(=O)N(C1CCC(=O)NC1=O)C2=O'
+        confs, _ = self._writeLinkerConformations(smiles)
+
+        self.driver._addHydrogens(confs)
+
+        expected = Chem.AddHs(Chem.MolFromSmiles(smiles)).GetNumAtoms()
+        mols = list(Chem.SDMolSupplier(confs, removeHs=False))
+        self.assertEqual(len(mols), 5)
+        self.assertEqual({m.GetNumAtoms() for m in mols}, {expected})
+
+    @_needsRDKit
+    def test_addVirtualAtoms_appends_three_bonded_atoms_to_every_conformation(self):
+        for smiles in ('CCOc1ccccc1', 'c1ccccc1OCC', '[NH3+]CCc1cc[nH]c1'):
+            with self.subTest(smiles=smiles):
+                self._checkVirtualAtoms(smiles)
+
+    def _checkVirtualAtoms(self, smiles):
+        from rdkit import Chem
+        confs, vSdf = self._writeLinkerConformations(smiles)
+        self.driver._addHydrogens(confs)
+        numAtoms = Chem.SDMolSupplier(confs, removeHs=False)[0].GetNumAtoms()
+
+        nbr = self.driver._addVirtualAtoms(confs, vSdf, confs)
+
+        self.assertEqual(nbr, numAtoms + 2)
+        virtual = self.driver._readVirtualAtoms(vSdf)
+        mols = list(Chem.SDMolSupplier(confs, removeHs=False, sanitize=False))
+        self.assertEqual(len(mols), 5)
+        for mol in mols:
+            self.assertEqual(mol.GetNumAtoms(), numAtoms + 3)
+            v1, v2, v3 = range(numAtoms, numAtoms + 3)
+            self.assertEqual([mol.GetAtomWithIdx(i).GetAtomicNum() for i in (v1, v2, v3)],
+                             [23, 23, 23])
+            for a, b in ((v1, v2), (v2, v3), (0, v1)):
+                self.assertIsNotNone(mol.GetBondBetweenAtoms(a, b))
+            for i, xyz in zip((v1, v2, v3), virtual):
+                self.assertEqual(tuple(mol.GetConformer().GetAtomPosition(i)), xyz)
+
+    @_needsRDKit
+    def test_addVirtualAtoms_rejects_conformations_of_different_size(self):
+        from rdkit import Chem
+        from rdkit.Chem import AllChem
+        confs, vSdf = self._writeLinkerConformations('CCO', n=1)
+        writer = Chem.SDWriter(confs)
+        for smiles in ('CCO', 'CCCO'):
+            mol = Chem.MolFromSmiles(smiles)
+            AllChem.EmbedMolecule(mol, randomSeed=1)
+            writer.write(mol)
+        writer.close()
+        with self.assertRaises(RuntimeError):
+            self.driver._addVirtualAtoms(confs, vSdf, confs)
+
+    def test_patchSdfHelpers_replaces_both_utils_functions(self):
+        utils = types.SimpleNamespace(addH_sdf=None, add_virtual_atoms=None)
+        with mock.patch.dict(sys.modules, utils=utils):
+            self.driver._patchSdfHelpers()
+        self.assertIs(utils.addH_sdf, self.driver._addHydrogens)
+        self.assertIs(utils.add_virtual_atoms, self.driver._addVirtualAtoms)
+
+    def test_checkConstraintJob_accepts_a_discarded_solution(self):
+        # No conformation could bridge the heads: the original removes confs_*.sdf.
+        with _chdir(self.workDir):
+            self.driver._checkConstraintJob('1_1')
+
+    def test_checkConstraintJob_requires_params_and_relaxed_model(self):
+        with _chdir(self.workDir):
+            _write('confs_1_1.sdf', 'x\n')
+            with self.assertRaisesRegex(RuntimeError, 'molfile_to_params'):
+                self.driver._checkConstraintJob('1_1')
+            _write('PT_1_1.params', 'x\n')
+            with self.assertRaisesRegex(RuntimeError, 'relax'):
+                self.driver._checkConstraintJob('1_1')
+            _write('combined_1_1_0001.pdb', 'x\n')
+            self.driver._checkConstraintJob('1_1')
 
 
 class TestPRosettaCProtocol(BaseTest):

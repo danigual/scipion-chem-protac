@@ -381,14 +381,92 @@ def _patchEmbedMolecule():
     rdDistGeom.EmbedMolecule = embedMolecule
 
 
+def _addHydrogens(sdfFile, newSdf=None):
+    """ Replaces utils.addH_sdf for the linker conformations. The original goes through a
+    PDB and back, so OpenBabel re-perceives bond orders from each conformation's geometry
+    and some come out with fewer H than others. The bond orders written by GenConstConf
+    come from the SMILES, so keep them. """
+    from rdkit import Chem
+
+    mols = list(Chem.SDMolSupplier(sdfFile, removeHs=False))
+    if not mols or any(mol is None for mol in mols):
+        raise RuntimeError('RDKit cannot read every conformation in %s.' % sdfFile)
+    writer = Chem.SDWriter(newSdf or sdfFile)
+    for mol in mols:
+        writer.write(Chem.AddHs(mol, addCoords=True))
+    writer.close()
+
+
+def _readVirtualAtoms(vAtomsSdf):
+    """ Coordinates of the 3 virtual atoms. Parsed by hand like the original: the file
+    comes from a SMARTS molecule, whose query bonds RDKit does not read back. """
+    with open(vAtomsSdf) as f:
+        atomLines = f.readlines()[4:7]
+    return [tuple(float(line[i:i + 10]) for i in (0, 10, 20)) for line in atomLines]
+
+
+def _addVirtualAtoms(inputSdf, vAtomsSdf, outputSdf):
+    """ Replaces utils.add_virtual_atoms, which only works on OpenBabel's PDB-derived SDF
+    layout and assumes every conformation has as many atoms as the first one. Same result:
+    the 3 virtual atoms appended, bonded V1-V2, V2-V3 and atom 1-V1, and the middle one
+    returned (1-based) as the neighbour atom. """
+    from rdkit import Chem
+    from rdkit.Geometry import Point3D
+
+    mols = list(Chem.SDMolSupplier(inputSdf, removeHs=False))
+    if not mols or any(mol is None for mol in mols):
+        raise RuntimeError('RDKit cannot read every conformation in %s.' % inputSdf)
+    numAtoms = mols[0].GetNumAtoms()
+    if any(mol.GetNumAtoms() != numAtoms for mol in mols):
+        raise RuntimeError('The conformations in %s have different numbers of atoms.'
+                           % inputSdf)
+    virtual = _readVirtualAtoms(vAtomsSdf)
+
+    writer = Chem.SDWriter(outputSdf)
+    for mol in mols:
+        rw = Chem.RWMol(mol)
+        # Before the atom 1-V1 bond: an aromatic atom 1 with one more neighbour can no
+        # longer be kekulized when writing.
+        Chem.Kekulize(rw, clearAromaticFlags=True)
+        for _ in virtual:
+            rw.AddAtom(Chem.Atom(23))
+        conf = rw.GetConformer()
+        for i, xyz in enumerate(virtual):
+            conf.SetAtomPosition(numAtoms + i, Point3D(*xyz))
+        rw.AddBond(numAtoms, numAtoms + 1, Chem.BondType.SINGLE)
+        rw.AddBond(numAtoms + 1, numAtoms + 2, Chem.BondType.SINGLE)
+        rw.AddBond(0, numAtoms, Chem.BondType.SINGLE)
+        rw.UpdatePropertyCache(strict=False)
+        writer.write(rw)
+    writer.close()
+    return numAtoms + 2
+
+
+def _patchSdfHelpers():
+    import utils
+    utils.addH_sdf = _addHydrogens
+    utils.add_virtual_atoms = _addVirtualAtoms
+
+
+def _checkConstraintJob(suffix):
+    """ constraint_generation.py runs its tools with os.system and always exits 0. No
+    confs file means no conformation could be built, a legitimate discard. """
+    if not os.path.exists('confs_%s.sdf' % suffix):
+        return
+    _require('PT_%s.params' % suffix, 'molfile_to_params.py')
+    _require('combined_%s_0001.pdb' % suffix, 'The Rosetta relax of combined_%s.pdb' % suffix)
+
+
 def _runConstraintGeneration(argv):
-    """ One constraint_generation.py job, run in this process so the patch applies. """
+    """ One constraint_generation.py job, run in this process so the patches apply. """
     import runpy
     _patchEmbedMolecule()
+    _patchSdfHelpers()
     script = os.path.join(os.environ['SCRIPTS_FOL'].rstrip(os.sep),
                           'constraint_generation.py')
     sys.argv = [script] + argv
     runpy.run_path(script, run_name='__main__')
+    _checkConstraintJob(argv[3])
 
 
 def runClustering(args):
