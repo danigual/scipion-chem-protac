@@ -286,6 +286,7 @@ class ProtPROTACModel(EMProtocol):
         print(f'Target ligand SMILES: {self.targetLigandSmiles}')
         print(f'PROTAC SMILES: {self.protacSmiles}')
 
+        #todo see if i can exclude this and call it directly instead of copying
         Plugin.prepareFrodockBinDir(self._getFrodockBinDir())
 
     def frodockStep(self):
