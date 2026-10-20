@@ -41,7 +41,7 @@ The pipeline logic is not reimplemented: each step launches the Python 2 driver
 run_protac_model.py, which calls PROTAC-Model's own functions.
 """
 
-import json
+import json, csv
 import os
 
 from pyworkflow.constants import BETA
@@ -54,8 +54,11 @@ from pwem.objects import AtomStruct
 
 from pwchem.objects import SetOfAtomStructsChem
 from pwchem.utils import cleanPDB, convertToSdf
+from pwem.convert import cifToPdb
 
 from protac import Plugin, PROTAC_MODEL_PYTHON_DIC
+from pwchem import Plugin as pwchemPlugin
+from pwchem.constants import RDKIT_DIC, OPENBABEL_DIC
 from protac.utils.molecules import findMolByName, listMolNames
 
 
@@ -75,13 +78,14 @@ class ProtPROTACModel(EMProtocol):
         form.addSection(label=Message.LABEL_INPUT)
         group = form.addGroup('Proteins')
         group.addParam('inputReceptor', params.PointerParam, pointerClass='AtomStruct',
-                       label='Receptor structure', allowsNull=False,
+                       label='Receptor structure',
                        help='Larger of the two proteins. Passed '
                             'as the FRODOCK receptor. Per PROTAC-Model\'s own requirements, '
                             'this structure should already include its bound small-molecule '
                             'warhead (as HETATM records). Unrelated heteroatoms are stripped '
                             'automatically when its warhead is named below.')
-        group.addParam('receptorLigandName', params.StringParam, allowsNull=True,
+        #todo see how i do this, for the site thing maybe do it internally directly
+        group.addParam('receptorLigandName', params.StringParam,
                        label='Receptor warhead residue name',
                        help='Residue name of the bound warhead in the receptor, as it appears '
                             'in the PDB HETATM records (e.g. "B96"). Every other heteroatom '
@@ -91,21 +95,21 @@ class ProtPROTACModel(EMProtocol):
                             'point and give wrong models with normal-looking scores. Leave '
                             'empty only if the warhead is already the only heteroatom.')
         group.addParam('inputTarget', params.PointerParam, pointerClass='AtomStruct',
-                       label='Target structure', allowsNull=False,
+                       label='Target structure',
                        help='Smaller of the two proteins (typically the protein of '
                             'interest, POI). Passed as the FRODOCK docking target. Per '
                             'PROTAC-Model\'s own requirements, this structure should '
                             'already include its bound small-molecule warhead (as HETATM '
                             'records). Unrelated heteroatoms are stripped automatically '
                             'when its warhead is named below.')
-        group.addParam('targetLigandName', params.StringParam, allowsNull=True,
+        group.addParam('targetLigandName', params.StringParam,
                        label='Target warhead residue name',
                        help='Residue name of the bound warhead in the target, as it '
                             'appears in the PDB HETATM records. Same purpose and same '
                             'caveats as "Receptor warhead residue name" above, for the '
                             'other protein.')
-        group.addParam('siteCoords', params.StringParam, allowsNull=False,
-                       validators=[params.NonEmptyCondition()],
+        #todo do internally
+        group.addParam('siteCoords', params.StringParam,
                        label='Receptor interface site (X,Y,Z)',
                        help='Point on the receptor where the ternary complex is expected '
                             'to form; FRODOCK restricts its search around it. The wizard '
@@ -115,39 +119,22 @@ class ProtPROTACModel(EMProtocol):
                             'when "Receptor warhead residue name" is set.')
 
         group = form.addGroup('PROTAC')
-        group.addParam('protacSmiles', params.StringParam, allowsNull=False,
-                       validators=[params.NonEmptyCondition()],
-                       label='PROTAC SMILES',
-                       help='SMILES of the full PROTAC molecule (E3 ligand - linker - '
+        group.addParam('protacMolecule', params.PointerParam,
+                       pointerClass='SetOfSmallMolecules',
+                       label='PROTAC molecule: ',
+                       help='Full PROTAC molecule (E3 ligand - linker - '
                             'POI warhead), used to filter FRODOCK poses by compatibility '
                             'with the linker geometry.')
-        group.addParam('receptorLigandSmiles', params.StringParam, allowsNull=True,
-                       label='Receptor-bound ligand SMILES (optional)',
-                       help='SMILES of the small-molecule warhead already bound in the '
-                            'receptor structure (equivalent to PROTAC-Model\'s -irsmi). '
-                            'RDKit can sometimes fail to assign the correct bonds for this '
-                            'ligand when reading it straight from the PDB HETATM records; '
-                            'providing its SMILES avoids that failure mode.')
-        group.addParam('targetLigandSmiles', params.StringParam, allowsNull=True,
-                       label='Target-bound ligand SMILES (optional)',
-                       help='SMILES of the small-molecule warhead already bound in the '
-                            'target structure (equivalent to PROTAC-Model\'s -itsmi). Same '
-                            'purpose as "Receptor-bound ligand SMILES", for the other '
-                            'protein.')
-        group.addParam('e3Ligands', params.PointerParam, pointerClass='SetOfSmallMolecules',
-                       allowsNull=True, label='E3 ligand conformers (optional)',
-                       help='Set holding two bound conformations/orientations of the '
-                            'E3-binding warhead. Only needed for E3 ligands that can anchor '
-                            'in more than one way (e.g. thalidomide-based degraders); '
-                            'PROTAC-Model then tries both.')
-        group.addParam('e3Ligand1Name', params.StringParam,
-                       condition='e3Ligands is not None',
-                       label='E3 conformer 1 name',
-                       help='Name of the first conformer within the set above.')
-        group.addParam('e3Ligand2Name', params.StringParam,
-                       condition='e3Ligands is not None',
-                       label='E3 conformer 2 name',
-                       help='Name of the second conformer within the set above.')
+
+        group.addParam('receptorLigandMol', params.PointerParam,
+                       pointerClass='SetOfSmallMolecules',
+                       label='Receptor ligand: ',
+                       help='Docked receptor ligand. ')
+
+        group.addParam('targetLigandMol', params.PointerParam,
+                       pointerClass='SetOfSmallMolecules',
+                       label='Target ligand: ',
+                       help='Docked target ligand. ')
 
         group = form.addGroup('Docking parameters')
         group.addParam('doRefine', params.BooleanParam, default=False,
@@ -161,19 +148,8 @@ class ProtPROTACModel(EMProtocol):
 
         form.addParallelSection(threads=4, mpi=1)
 
-    @classmethod
-    def validateInstallation(cls):
-        """ Every tool of the FRODOCK + filtering pipeline. Rosetta, only needed to refine,
-        is checked in _validate. """
-        try:
-            Plugin.getProtacModelEnviron()
-            Plugin.getProtacModelPython()
-        except FileNotFoundError as e:
-            return [str(e)]
-        return Plugin.checkProtacModelBinaries()
-
     # --------------------------- STEPS functions ------------------------------
-    def _insertAllSteps(self):
+    def _insertAllStepsOld(self):
         # Scipion compares each step's arguments on its own when continuing a run, so every
         # step also gets a key with its predecessors' arguments: changing an input then
         # reruns the step that uses it and everything after it.
@@ -210,56 +186,139 @@ class ProtPROTACModel(EMProtocol):
                               [self.doRefine.get()]),
             prerequisites=[lastId])
 
-    def convertInputStep(self, receptorFile, receptorLigandName, targetFile,
-                         targetLigandName, e3SetId, e3Name1, e3Name2):
-        """ Writes the cleaned receptor/target PDBs (no water, and only the named warhead
-        among heteroatoms when its residue name is given) and the E3 conformers as SDF.
-        e3SetId is unused: it makes Scipion rerun the step when the set changes. """
-        self._cleanReceptorOrTarget(receptorFile, self._getReceptorFile(),
-                                    receptorLigandName)
-        self._cleanReceptorOrTarget(targetFile, self._getTargetFile(), targetLigandName)
+    def _insertAllSteps(self):
+        self._insertFunctionStep(self.convertInputStep)
+        self._insertFunctionStep(self.frodockStep)
+        self._insertFunctionStep(self.filterPosesStep)
 
-        if e3Name1 and e3Name2:
-            for name, outFile in zip((e3Name1, e3Name2), self._getE3LigandFiles()):
-                mol = findMolByName(self.e3Ligands.get(), name)
-                srcFile = mol.getPoseFile() if mol.getPoseFile() else mol.getFileName()
-                convertToSdf(self, srcFile, sdfFile=outFile, overWrite=True)
+    def convertInputStep(self):
+        for structure, basename in (
+                (self.inputReceptor.get().getFileName(), 'receptor'),
+                (self.inputTarget.get().getFileName(), 'target')
+        ):
+            file = structure
 
-        # Picks the FRODOCK build (intel/gcc) that actually loads on this machine;
-        # PROTAC-Model only checks that the intel binary exists.
+            if file.endswith('.cif'):
+                inpFile = os.path.abspath(self._getExtraPath(basename + '.pdb'))
+                cifToPdb(file, inpFile)
+            else:
+                inpFile = os.path.abspath(self._getExtraPath(basename + '.pdb'))
+                shutil.copy2(file, inpFile)
+
+        ligands = [
+            ('receptor', self.receptorLigandMol.get().getFirstItem()),
+            ('target', self.targetLigandMol.get().getFirstItem()),
+            ('protac', self.protacMolecule.get().getFirstItem())
+        ]
+
+        extraDir = os.path.abspath(self._getExtraPath())
+        smilesList = os.path.join(extraDir, 'ligands.txt')
+
+        with open(smilesList, 'w') as f:
+            for name, mol in ligands:
+                molFile = (
+                    mol.getPoseFile()
+                    if mol.getPoseFile()
+                    else mol.getFileName()
+                )
+                molFile = os.path.abspath(molFile)
+
+                # Convert MOL files to SDF before RDKit processing
+                if os.path.splitext(molFile)[1].lower() == '.mol':
+                    sdfFile = os.path.join(extraDir, f'{name}_ligand.sdf')
+
+                    pwchemPlugin.runScript(
+                        self,
+                        'obabel_IO.py',
+                        [
+                            '-i', molFile,
+                            '-of', 'sdf',
+                            '-o', f'{name}_ligand',
+                            '-od', extraDir
+                        ],
+                        env=OPENBABEL_DIC,
+                        cwd=self._getPath()
+                    )
+
+                    molFile = sdfFile
+
+                f.write(f'{molFile}\n')
+
+        # Generate SMILES CSV using RDKit
+        smilesCsv = os.path.join(extraDir, 'ligand_smiles.csv')
+
+        pwchemPlugin.runScript(
+            self,
+            'rdkit_IO.py',
+            [
+                '-i', smilesList,
+                '-of', 'smiles_csv',
+                '-o', 'ligand_smiles',
+                '-od', extraDir
+            ],
+            env=RDKIT_DIC,
+            cwd=self._getPath()
+        )
+
+        with open(smilesCsv, newline='') as f:
+            reader = csv.DictReader(f)
+            smilesColumn = next(
+                (
+                    col for col in (reader.fieldnames or [])
+                    if 'smiles' in col.lower()
+                ),
+                None
+            )
+
+            if smilesColumn is None:
+                raise ValueError(
+                    f'No SMILES column found in {smilesCsv}. '
+                    f'CSV columns: {reader.fieldnames}'
+                )
+
+            rows = list(reader)
+
+        self.receptorLigandSmiles = rows[0][smilesColumn].strip()
+        self.targetLigandSmiles = rows[1][smilesColumn].strip()
+        self.protacSmiles = rows[2][smilesColumn].strip()
+
+        print(f'Receptor ligand SMILES: {self.receptorLigandSmiles}')
+        print(f'Target ligand SMILES: {self.targetLigandSmiles}')
+        print(f'PROTAC SMILES: {self.protacSmiles}')
+
         Plugin.prepareFrodockBinDir(self._getFrodockBinDir())
 
-    def frodockStep(self, site, protacSmiles, e3lig1, e3lig2, upstream):
-        """ FRODOCK global docking (fro.frodock). The frodock and filter phases share
-        extra/frodock/, since the original works with paths relative to it. """
+    def frodockStep(self):
         frodockDir = self._getExtraPath('frodock')
         os.makedirs(frodockDir, exist_ok=True)
 
-        # Absolute (the driver runs from another cwd) and quoted (it goes through a shell).
         receptorFile = os.path.abspath(self._getReceptorFile())
         targetFile = os.path.abspath(self._getTargetFile())
-        args = (f'--phase frodock --receptor "{receptorFile}" --target "{targetFile}" '
-               f'--smiles "{protacSmiles}" --site={site}')
-        if e3lig1 and e3lig2:
-            args += (f' --e3lig1 "{os.path.abspath(e3lig1)}"'
-                     f' --e3lig2 "{os.path.abspath(e3lig2)}"')
 
-        Plugin.runCondaScript(self, Plugin.getPluginScript('run_protac_model.py'), args,
-                              PROTAC_MODEL_PYTHON_DIC,
-                              extraEnvDict=Plugin.getProtacModelEnviron(
-                                  frodockHome=self._getFrodockBinDir()),
-                              cwd=frodockDir)
+        args = (
+            f'--phase frodock '
+            f'--receptor "{receptorFile}" '
+            f'--target "{targetFile}" '
+            f'--smiles "{self.protacSmiles}" '
+            f'--site={self._getSiteArg()}'
+        )
 
-    def filterPosesStep(self, ligLocateNum, targetSmi, recSmi, upstream):
-        """ Filters the FRODOCK poses by compatibility with the PROTAC
-        (fro.filter_frodock). """
-        # The original never clears old results, and pose ids restart at 1 on every run,
-        # so a relaunch could pair a stale model with a fresh score.
+        Plugin.runCondaScript(
+            self,
+            Plugin.getPluginScript('run_protac_model.py'),
+            args,
+            PROTAC_MODEL_PYTHON_DIC,
+            extraEnvDict=Plugin.getProtacModelEnviron(),
+            cwd=frodockDir
+        )
+
+    def filterPosesStep(self):
+        ligLocateNum = 1
         cleanPath(self._getExtraPath('frodock_results'))
 
         args = (f'--phase filter --cpu {self.numberOfThreads.get()} '
                f'--lig-locate-num {ligLocateNum} '
-               f'--target-smi "{targetSmi}" --rec-smi "{recSmi}"')
+               f'--target-smi "{self.targetLigandSmiles}" --rec-smi "{self.receptorLigandSmiles}"')
         Plugin.runCondaScript(self, Plugin.getPluginScript('run_protac_model.py'), args,
                               PROTAC_MODEL_PYTHON_DIC,
                               extraEnvDict=Plugin.getProtacModelEnviron(
@@ -338,44 +397,6 @@ class ProtPROTACModel(EMProtocol):
     # --------------------------- INFO functions -----------------------------------
     def _validate(self):
         errors = []
-
-        if self._getSiteCoords() is None:
-            errors.append('"Receptor interface site (X,Y,Z)" must be 3 comma-separated '
-                          f'numbers, e.g. "12.3,-4.5,6.7". Got: "{self.siteCoords.get()}".')
-
-        if self.e3Ligands.get() is not None:
-            names = [(self.e3Ligand1Name.get() or '').strip(),
-                     (self.e3Ligand2Name.get() or '').strip()]
-            if not all(names):
-                errors.append('"E3 ligand conformers" needs both conformer names: '
-                              'PROTAC-Model only uses them as a pair.')
-            elif names[0] == names[1]:
-                errors.append('"E3 conformer 1 name" and "E3 conformer 2 name" must be '
-                              'different molecules.')
-            else:
-                for i, name in enumerate(names, start=1):
-                    try:
-                        findMolByName(self.e3Ligands.get(), name)
-                    except ValueError as e:
-                        errors.append(f'"E3 conformer {i} name": {e}')
-
-        # generate_rosetta_para() only defines gen_conf_num when cpu > 10, so refinement
-        # would crash after hours of docking and filtering.
-        if self.doRefine.get() and self.numberOfThreads.get() <= 10:
-            errors.append('"Refine with RosettaDock" needs more than 10 threads: '
-                          'PROTAC-Model\'s own refinement code (generate_rosetta_para) '
-                          'crashes with cpu<=10 (UnboundLocalError on gen_conf_num), and '
-                          'that number also sets mpirun\'s -np and Rosetta\'s nstruct, so '
-                          f'it cannot be silently raised for you. Got {self.numberOfThreads.get()} '
-                          'threads.')
-
-        # The other tools are checked in validateInstallation().
-        if self.doRefine.get():
-            try:
-                Plugin.getProtacModelEnviron(needRosetta=True)
-            except FileNotFoundError as e:
-                errors.append(str(e))
-
         return errors
 
     def _summary(self):

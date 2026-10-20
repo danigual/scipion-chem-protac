@@ -1,1 +1,1 @@
-from .wizards import *
+from .wizards import LigandCentroidWizard

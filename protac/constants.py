@@ -33,11 +33,11 @@ FRODOCK_DIC = {'name': 'frodock', 'version': '3.12', 'home': 'FRODOCK_HOME'}
 
 # Tools used by PROTAC-Model's pose filtering. ADFRsuite 1.0 is fixed by its download
 # URL and installer folder name.
-ADFRSUITE_DIC = {'name': 'adfrsuite', 'version': '1.0', 'home': 'ADFRSUITE_HOME'}
+ADFRSUITE_DIC = {'name': 'AutoSite', 'version': '1.0', 'home': 'ADFRSUITE_HOME'}
 # Same version as scipion-chem-autodock. The Vina fixes in run_protac_model.py were
 # checked against Vina's source for 1.2.2, 1.2.3 and 1.2.5. Not VINA_HOME: autodock uses
 # that name for a tree without bin/vina.
-VINA_DIC = {'name': 'vina', 'version': '1.2.3', 'home': 'PROTAC_VINA_HOME'}
+VINA_DIC = {'name': 'Vina', 'version': '1.2.3', 'home': 'PROTAC_VINA_HOME'}
 VOROMQA_DIC = {'name': 'voromqa', 'version': '1.29.4816', 'home': 'VOROMQA_HOME'}
 FCC_DIC = {'name': 'fcc', 'version': 'latest', 'home': 'FCC_HOME'}
 
