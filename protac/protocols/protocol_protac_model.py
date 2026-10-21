@@ -118,7 +118,7 @@ class ProtPROTACModel(EMProtocol):
                             'records, measured on the cleaned structure (warhead only) '
                             'when "Receptor warhead residue name" is set.')
 
-        group = form.addGroup('PROTAC')
+        group = form.addGroup('PROTAC') #todo first select the setofsmallmols and from there let the user select the mols
         group.addParam('protacMolecule', params.PointerParam,
                        pointerClass='SetOfSmallMolecules',
                        label='PROTAC molecule: ',
