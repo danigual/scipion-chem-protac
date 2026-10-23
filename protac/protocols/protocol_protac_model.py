@@ -70,7 +70,7 @@ class ProtPROTACModel(EMProtocol):
     by compatibility with the PROTAC linker geometry, and optional RosettaDock
     refinement of the surviving poses.
     """
-    _label = 'PROTAC ternary complex modeling (PROTAC-Model)'
+    _label = 'PROTAC-Model complex modeling'
     _devStatus = BETA
 
     # -------------------------- DEFINE param functions ----------------------
@@ -190,6 +190,9 @@ class ProtPROTACModel(EMProtocol):
         self._insertFunctionStep(self.convertInputStep)
         self._insertFunctionStep(self.frodockStep)
         self._insertFunctionStep(self.filterPosesStep)
+        if self.doRefine.get():
+            self._insertFunctionStep(self.refineStep)
+        self._insertFunctionStep(self.createOutputStep)
 
     def convertInputStep(self):
         for structure, basename in (
@@ -206,26 +209,41 @@ class ProtPROTACModel(EMProtocol):
                 shutil.copy2(file, inpFile)
 
         ligands = [
-            ('receptor', self.receptorLigandMol.get().getFirstItem()),
-            ('target', self.targetLigandMol.get().getFirstItem()),
-            ('protac', self.protacMolecule.get().getFirstItem())
+            ('receptor', self.receptorLigandMol.get()),
+            ('target', self.targetLigandMol.get()),
+            ('protac', self.protacMolecule.get())
         ]
 
         extraDir = os.path.abspath(self._getExtraPath())
         smilesList = os.path.join(extraDir, 'ligands.txt')
 
         with open(smilesList, 'w') as f:
-            for name, mol in ligands:
-                molFile = (
-                    mol.getPoseFile()
-                    if mol.getPoseFile()
-                    else mol.getFileName()
-                )
-                molFile = os.path.abspath(molFile)
+            for name, molSet in ligands:
+                mol = molSet.getFirstItem()
 
-                # Convert MOL files to SDF before RDKit processing
-                if os.path.splitext(molFile)[1].lower() == '.mol':
-                    sdfFile = os.path.join(extraDir, f'{name}_ligand.sdf')
+                # Use the pose file for docked sets; otherwise, use the
+                # molecule's original file.
+                if molSet.isDocked():
+                    molFile = mol.getPoseFile()
+                    print('DOCKED', molFile)
+                else:
+                    molFile = mol.getFileName()
+                    print('NOT DOCKED', molFile)
+
+                if not molFile:
+                    raise ValueError(
+                        f'No {"pose" if molSet.isDocked() else "molecule"} '
+                        f'file found for {name}'
+                    )
+
+                molFile = os.path.abspath(molFile)
+                ext = os.path.splitext(molFile)[1].lower()
+
+                # Convert MOL files to SDF before RDKit processing.
+                if ext == '.mol':
+                    sdfFile = os.path.join(
+                        extraDir, f'{name}_ligand.sdf'
+                    )
 
                     pwchemPlugin.runScript(
                         self,
@@ -240,7 +258,18 @@ class ProtPROTACModel(EMProtocol):
                         cwd=self._getPath()
                     )
 
+                    if not os.path.isfile(sdfFile):
+                        raise FileNotFoundError(
+                            f'SDF conversion failed for {name}: {sdfFile}'
+                        )
+
                     molFile = sdfFile
+
+                elif ext not in ('.sdf',):
+                    raise ValueError(
+                        f'Unsupported ligand format for {name}: '
+                        f'{ext} ({molFile})'
+                    )
 
                 f.write(f'{molFile}\n')
 
@@ -295,12 +324,13 @@ class ProtPROTACModel(EMProtocol):
 
         receptorFile = os.path.abspath(self._getReceptorFile())
         targetFile = os.path.abspath(self._getTargetFile())
+        protac = self._getLigandSmiles("protac")
 
         args = (
             f'--phase frodock '
             f'--receptor "{receptorFile}" '
             f'--target "{targetFile}" '
-            f'--smiles "{self.protacSmiles}" '
+            f'--smiles "{protac}" '
             f'--site={self._getSiteArg()}'
         )
 
@@ -317,25 +347,32 @@ class ProtPROTACModel(EMProtocol):
         ligLocateNum = 1
         cleanPath(self._getExtraPath('frodock_results'))
 
+        targetSmiles = self._getLigandSmiles("target")
+        receptorSmiles = self._getLigandSmiles("receptor")
+
         args = (f'--phase filter --cpu {self.numberOfThreads.get()} '
                f'--lig-locate-num {ligLocateNum} '
-               f'--target-smi "{self.targetLigandSmiles}" --rec-smi "{self.receptorLigandSmiles}"')
+               f'--target-smi "{targetSmiles}" --rec-smi "{receptorSmiles}"')
         Plugin.runCondaScript(self, Plugin.getPluginScript('run_protac_model.py'), args,
                               PROTAC_MODEL_PYTHON_DIC,
                               extraEnvDict=Plugin.getProtacModelEnviron(
                                   frodockHome=self._getFrodockBinDir()),
                               cwd=self._getExtraPath('frodock'))
 
-    def refineStep(self, cpu, ligLocateNum, targetSmi, recSmi, upstream):
+    def refineStep(self):
         """ Optional RosettaDock refinement (ros.rosetta). """
         # Next to extra/frodock/: ros.rosetta() reaches it through '../frodock/'.
+        cpu = self.numberOfThreads.get()
+        ligLocateNum = 1
+        targetSmiles = self._getLigandSmiles("target")
+        receptorSmiles = self._getLigandSmiles("receptor")
         rosettaDir = self._getExtraPath('rosetta')
         os.makedirs(rosettaDir, exist_ok=True)
         # Same reason as in filterPosesStep.
         cleanPath(self._getExtraPath('rosetta_results'))
 
         args = (f'--phase refine --cpu {cpu} --lig-locate-num {ligLocateNum} '
-               f'--target-smi "{targetSmi}" --rec-smi "{recSmi}"')
+               f'--target-smi "{targetSmiles}" --rec-smi "{receptorSmiles}"')
         Plugin.runCondaScript(self, Plugin.getPluginScript('run_protac_model.py'), args,
                               PROTAC_MODEL_PYTHON_DIC,
                               extraEnvDict=Plugin.getProtacModelEnviron(
@@ -490,4 +527,61 @@ class ProtPROTACModel(EMProtocol):
         value = (smilesParam.get() or '').strip()
         return value or 'none'
 
+    def _getLigandSmiles(self, ligandName):
+        """Retrieve a ligand SMILES from the CSV generated by convertInputStep."""
+        smilesCsv = self._getExtraPath('ligand_smiles.csv')
 
+        if not os.path.isfile(smilesCsv):
+            raise FileNotFoundError(
+                f'Ligand SMILES file not found: {smilesCsv}'
+            )
+
+        with open(smilesCsv, newline='') as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+
+        smilesColumn = next(
+            (
+                col for col in (reader.fieldnames or [])
+                if 'smiles' in col.lower()
+            ),
+            None
+        )
+
+        if smilesColumn is None:
+            raise ValueError(
+                f'No SMILES column found in {smilesCsv}'
+            )
+
+        nameColumn = next(
+            (
+                col for col in (reader.fieldnames or [])
+                if col.lower() == 'name'
+            ),
+            None
+        )
+
+        if nameColumn:
+            for row in rows:
+                if row[nameColumn].strip().lower() == ligandName.lower():
+                    return row[smilesColumn].strip()
+
+        # The CSV is generated in receptor, target, PROTAC order.
+        indices = {
+            'receptor': 0,
+            'target': 1,
+            'protac': 2
+        }
+
+        if ligandName not in indices:
+            raise ValueError(f'Unknown ligand name: {ligandName}')
+
+        index = indices[ligandName]
+
+        if index >= len(rows):
+            raise ValueError(
+                f'Expected a SMILES for {ligandName}, but {smilesCsv} '
+                f'contains only {len(rows)} rows.'
+            )
+
+        return rows[index][smilesColumn].strip()

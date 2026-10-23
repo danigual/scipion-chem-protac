@@ -65,11 +65,7 @@ LigandCentroidWizard().addTarget(protocol=ProtPROTACModel, targets=['siteCoords'
                                  inputs=['inputReceptor', 'receptorLigandName'],
                                  outputs=['siteCoords'])
 
-# Molecule names within the input sets.
-for protocol, nameParam, namesMethod in (
-        (ProtPROTACModel, 'e3Ligand1Name', 'getE3LigandNames'),
-        (ProtPROTACModel, 'e3Ligand2Name', 'getE3LigandNames'),
-        (ProtPRosettaC, 'head1Name', 'getHead1Names'),
-        (ProtPRosettaC, 'head2Name', 'getHead2Names')):
-    SelectElementWizard().addTarget(protocol=protocol, targets=[nameParam],
-                                    inputs=[namesMethod], outputs=[nameParam])
+SelectElementWizard().addTarget(protocol=ProtPRosettaC, targets=['e3ligaseLigand'],
+                                    inputs=['setE3Ligase'], outputs=['e3ligaseLigand'])
+SelectElementWizard().addTarget(protocol=ProtPRosettaC, targets=['targetLIgand'],
+                                    inputs=['setTargetLigand'], outputs=['targetLIgand'])

@@ -8,6 +8,7 @@ from scipion.install.funcs import InstallHelper
 from pwchem import Plugin as pwchemPlugin
 from pwchem import constants as pwchemConstants
 from rosetta import Plugin as RosettaPlugin, ROSETTA_DIC
+from autodock import Plugin as AutodockPlugin, VINA_DIC
 
 from .constants import *
 
@@ -393,7 +394,7 @@ class Plugin(pwchemPlugin):
             cls._requireToolHome(FRODOCK_DIC), 'bin')
         adfr = os.path.join(
             cls._requireToolHome(ADFRSUITE_DIC), 'bin')
-        vinaHome = cls._requireToolHome(VINA_DIC)
+        vinaHome = cls.getVinaHome()
         voromqa = cls._requireToolHome(VOROMQA_DIC)
         fcc = os.path.join(
             cls._requireToolHome(FCC_DIC), FCC_DIC['name'])
@@ -438,7 +439,7 @@ class Plugin(pwchemPlugin):
         environ = {
             'FRODOCK': frodockHome or cls._requireToolHome(FRODOCK_DIC),
             'ADFRSUITE': cls._requireToolHome(ADFRSUITE_DIC),
-            'VINA': cls._requireToolHome(VINA_DIC),
+            'VINA': cls.getVinaHome(),
             'VOROMQA': cls._requireToolHome(VOROMQA_DIC),
             'FCC': os.path.join(
                 cls._requireToolHome(FCC_DIC), FCC_DIC['name']),
@@ -484,6 +485,19 @@ class Plugin(pwchemPlugin):
     @classmethod
     def getPluginScript(cls, scriptName):
         return os.path.join(_PLUGIN_DIR, 'scripts', scriptName)
+
+    @classmethod
+    def getVinaHome(cls):
+        vinaBin = pwchemPlugin.getEnvPath(VINA_DIC, innerPath='bin/vina')
+
+        if not os.path.isfile(vinaBin) or not os.access(vinaBin, os.X_OK):
+            raise FileNotFoundError(
+                f"Vina executable not found or not executable: {vinaBin}\n"
+                f"Check the Vina installation configured in Scipion."
+            )
+
+        # PROTAC-Model expects VINA/bin/vina
+        return os.path.dirname(os.path.dirname(vinaBin))
 
     # -------------------------------------------------------------------------
     # Running external scripts
