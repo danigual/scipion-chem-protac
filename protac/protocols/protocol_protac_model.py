@@ -379,7 +379,7 @@ class ProtPROTACModel(EMProtocol):
                                   frodockHome=self._getFrodockBinDir(), needRosetta=True),
                               cwd=rosettaDir)
 
-    def createOutputStep(self, upstream):
+    def createOutputStep(self):
         """ One AtomStruct per final model, with its VoroMQA score (lower is better) as
         '_score'. """
         if self.doRefine.get():
@@ -429,8 +429,6 @@ class ProtPROTACModel(EMProtocol):
         self._defineSourceRelation(self.inputReceptor, outputSet)
         self._defineSourceRelation(self.inputTarget, outputSet)
         # The E3 conformers also decide which poses survive, so they go in the provenance.
-        if self._useE3Ligands():
-            self._defineSourceRelation(self.e3Ligands, outputSet)
 
     # --------------------------- INFO functions -----------------------------------
     def _validate(self):
