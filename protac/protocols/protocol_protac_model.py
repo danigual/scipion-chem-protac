@@ -42,7 +42,7 @@ run_protac_model.py, which calls PROTAC-Model's own functions.
 """
 
 import json, csv
-import os
+import os, shutil
 
 from pyworkflow.constants import BETA
 from pyworkflow.protocol import params
@@ -315,7 +315,6 @@ class ProtPROTACModel(EMProtocol):
         print(f'Target ligand SMILES: {self.targetLigandSmiles}')
         print(f'PROTAC SMILES: {self.protacSmiles}')
 
-        #todo see if i can exclude this and call it directly instead of copying
         Plugin.prepareFrodockBinDir(self._getFrodockBinDir())
 
     def frodockStep(self):
@@ -429,6 +428,11 @@ class ProtPROTACModel(EMProtocol):
         self._defineSourceRelation(self.inputReceptor, outputSet)
         self._defineSourceRelation(self.inputTarget, outputSet)
         # The E3 conformers also decide which poses survive, so they go in the provenance.
+
+        # Remove intermediate files; final models are stored in the output set.
+        shutil.rmtree(self._getExtraPath('frodock'), ignore_errors=True)
+        shutil.rmtree(self._getFrodockBinDir(), ignore_errors=True)
+
 
     # --------------------------- INFO functions -----------------------------------
     def _validate(self):
