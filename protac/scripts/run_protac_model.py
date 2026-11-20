@@ -369,9 +369,81 @@ def runRefine(args):
                         os.path.join('vina', 'score_filter'))
 
     try:
+        _ensureRosettaDockExecutable()
         ros.rosetta(args.cpu, args.ligLocateNum, args.targetSmi, args.recSmi)
     finally:
         _reportPoseFailures()
+
+def _ensureRosettaDockExecutable():
+    """Expose the compiled static RosettaDock binary under the conventional
+    filename expected by PROTAC-Model, without modifying its source code.
+    """
+    rosettaHome = os.environ.get('ROSETTA')
+    if not rosettaHome:
+        raise RuntimeError('ROSETTA environment variable is not set.')
+
+    binDir = os.path.join(rosettaHome, 'main', 'source', 'bin')
+
+    # PROTAC-Model already recognises these conventional executable names.
+    conventionalNames = [
+        'docking_protocol.mpi.linuxiccrelease',
+        'docking_protocol.mpi.linuxgccrelease',
+        'docking_protocol.linuxiccrelease',
+        'docking_protocol.linuxgccrelease'
+    ]
+
+    for name in conventionalNames:
+        executable = os.path.join(binDir, name)
+        if os.path.isfile(executable) and os.access(executable, os.X_OK):
+            print('[protac] Found conventional RosettaDock executable:', executable)
+            return
+
+    # Look for the compiled static GCC executable.
+    pattern = os.path.join(
+        rosettaHome,
+        'main/source/build/src/release/*/*/*/*/*/*/static/'
+        'docking_protocol.static.linuxgccrelease'
+    )
+    candidates = glob.glob(pattern)
+
+    if not candidates:
+        raise RuntimeError(
+            'No compatible RosettaDock executable found under: %s' % rosettaHome
+        )
+
+    if len(candidates) > 1:
+        raise RuntimeError(
+            'Multiple static RosettaDock executables found: %s' % candidates
+        )
+
+    source = candidates[0]
+
+    if not os.access(source, os.X_OK):
+        raise RuntimeError(
+            'RosettaDock binary exists but is not executable: %s' % source
+        )
+
+    # Create the conventional location expected by PROTAC-Model.
+    if not os.path.isdir(binDir):
+        os.makedirs(binDir)
+
+    destination = os.path.join(binDir, 'docking_protocol.linuxgccrelease')
+
+    if os.path.lexists(destination):
+        if (os.path.isfile(destination) and
+                os.access(destination, os.X_OK)):
+            print('[protac] Using existing RosettaDock executable:', destination)
+            return
+
+        raise RuntimeError(
+            'Cannot create RosettaDock compatibility symlink: destination '
+            'already exists but is not executable: %s' % destination
+        )
+
+    os.symlink(source, destination)
+
+    print('[protac] Created RosettaDock compatibility symlink:')
+    print('         %s -> %s' % (destination, source))
 
 
 def parseArgs():

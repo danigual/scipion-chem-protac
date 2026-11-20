@@ -84,7 +84,6 @@ class ProtPROTACModel(EMProtocol):
                             'this structure should already include its bound small-molecule '
                             'warhead (as HETATM records). Unrelated heteroatoms are stripped '
                             'automatically when its warhead is named below.')
-        #todo see how i do this, for the site thing maybe do it internally directly
         group.addParam('receptorLigandName', params.StringParam,
                        label='Receptor warhead residue name',
                        help='Residue name of the bound warhead in the receptor, as it appears '
@@ -108,7 +107,6 @@ class ProtPROTACModel(EMProtocol):
                             'appears in the PDB HETATM records. Same purpose and same '
                             'caveats as "Receptor warhead residue name" above, for the '
                             'other protein.')
-        #todo do internally
         group.addParam('siteCoords', params.StringParam,
                        label='Receptor interface site (X,Y,Z)',
                        help='Point on the receptor where the ternary complex is expected '
@@ -149,43 +147,6 @@ class ProtPROTACModel(EMProtocol):
         form.addParallelSection(threads=4, mpi=1)
 
     # --------------------------- STEPS functions ------------------------------
-    def _insertAllStepsOld(self):
-        # Scipion compares each step's arguments on its own when continuing a run, so every
-        # step also gets a key with its predecessors' arguments: changing an input then
-        # reruns the step that uses it and everything after it.
-        convertArgs = [self.inputReceptor.get().getFileName(),
-                       self.receptorLigandName.get() or '',
-                       self.inputTarget.get().getFileName(),
-                       self.targetLigandName.get() or '',
-                       *self._getE3LigandArgs()]
-        e3lig1, e3lig2 = self._getE3LigandFiles()
-        dockArgs = [self._getSiteArg(), (self.protacSmiles.get() or '').strip(), e3lig1, e3lig2]
-        # Threads only change the results when refining (they set Rosetta's nstruct).
-        filterArgs = [self._getLigLocateNum(), self._getSmiArg(self.targetLigandSmiles),
-                      self._getSmiArg(self.receptorLigandSmiles)]
-
-        convertId = self._insertFunctionStep(self.convertInputStep, *convertArgs,
-                                             prerequisites=[])
-        dockId = self._insertFunctionStep(self.frodockStep, *dockArgs,
-                                          self._upstreamKey(convertArgs),
-                                          prerequisites=[convertId])
-        lastId = self._insertFunctionStep(self.filterPosesStep, *filterArgs,
-                                          self._upstreamKey(convertArgs, dockArgs),
-                                          prerequisites=[dockId])
-        refineArgs = []
-        if self.doRefine.get():
-            refineArgs = [self.numberOfThreads.get()] + filterArgs
-            lastId = self._insertFunctionStep(
-                self.refineStep, *refineArgs,
-                self._upstreamKey(convertArgs, dockArgs, filterArgs),
-                prerequisites=[lastId])
-
-        self._insertFunctionStep(
-            self.createOutputStep,
-            self._upstreamKey(convertArgs, dockArgs, filterArgs, refineArgs,
-                              [self.doRefine.get()]),
-            prerequisites=[lastId])
-
     def _insertAllSteps(self):
         self._insertFunctionStep(self.convertInputStep)
         self._insertFunctionStep(self.frodockStep)
@@ -370,7 +331,7 @@ class ProtPROTACModel(EMProtocol):
         # Same reason as in filterPosesStep.
         cleanPath(self._getExtraPath('rosetta_results'))
 
-        args = (f'--phase refine --cpu {cpu} --lig-locate-num {ligLocateNum} '
+        args = (f'--phase refine --cpu 11 --lig-locate-num {ligLocateNum} '
                f'--target-smi "{targetSmiles}" --rec-smi "{receptorSmiles}"')
         Plugin.runCondaScript(self, Plugin.getPluginScript('run_protac_model.py'), args,
                               PROTAC_MODEL_PYTHON_DIC,
@@ -435,8 +396,10 @@ class ProtPROTACModel(EMProtocol):
 
 
     # --------------------------- INFO functions -----------------------------------
-    def _validate(self):
+    def _warnings(self):
         errors = []
+        if self.doRefine.get():
+            errors = ["Rosetta refinement requires at least 11 CPUs. The number of CPUs will automatically be set to 11, regardless of the value specified by the user."]
         return errors
 
     def _summary(self):
@@ -453,10 +416,6 @@ class ProtPROTACModel(EMProtocol):
         return []
 
     # --------------------------- UTILS functions ------------------------------
-    def getE3LigandNames(self):
-        """ Molecule names in the E3 conformer set, listed by the name wizards. """
-        return listMolNames(self.e3Ligands.get())
-
     @staticmethod
     def _cleanReceptorOrTarget(inFile, outFile, ligandName):
         """ Water-stripped copy of inFile keeping only the named warhead, if any, among
@@ -485,28 +444,6 @@ class ProtPROTACModel(EMProtocol):
             return self.siteCoords.get() or ''
         return '%.4f,%.4f,%.4f' % coords
 
-    @staticmethod
-    def _upstreamKey(*argLists):
-        return json.dumps([arg for args in argLists for arg in args])
-
-    def _useE3Ligands(self):
-        return (self.e3Ligands.get() is not None and bool(self.e3Ligand1Name.get())
-                and bool(self.e3Ligand2Name.get()))
-
-    def _getE3LigandArgs(self):
-        """ Set id and both conformer names, or empty values without conformers. """
-        if not self._useE3Ligands():
-            return [0, '', '']
-        return [self.e3Ligands.get().getObjId(), self.e3Ligand1Name.get().strip(),
-                self.e3Ligand2Name.get().strip()]
-
-    def _getE3LigandFiles(self):
-        """ The two E3 conformer SDFs written by convertInputStep, or two empty strings:
-        PROTAC-Model uses them only as a pair. """
-        if not self._useE3Ligands():
-            return '', ''
-        return self._getExtraPath('e3_ligand_1.sdf'), self._getExtraPath('e3_ligand_2.sdf')
-
     def _getReceptorFile(self):
         """ Recomputed rather than cached: each step may run in its own process. """
         return self._getExtraPath('receptor.pdb')
@@ -518,16 +455,6 @@ class ProtPROTACModel(EMProtocol):
     def _getFrodockBinDir(self):
         """ FRODOCK binary shim built by convertInputStep. """
         return self._getExtraPath('frodock_bin')
-
-    def _getLigLocateNum(self):
-        """ PROTAC-Model's lig_locate_num: 2 with both E3 conformers, 1 otherwise. """
-        return 2 if all(self._getE3LigandFiles()) else 1
-
-    @staticmethod
-    def _getSmiArg(smilesParam):
-        """ 'none' is how PROTAC-Model means "no SMILES given". """
-        value = (smilesParam.get() or '').strip()
-        return value or 'none'
 
     def _getLigandSmiles(self, ligandName):
         """Retrieve a ligand SMILES from the CSV generated by convertInputStep."""
