@@ -217,7 +217,7 @@ class ProtPRosettaC(EMProtocol):
         """Copy the input structures to extra/, detect their chain IDs and
         rename conflicting target chains when necessary."""
 
-        extraDir = self._getExtraPath()
+        extraDir = os.path.abspath(self._getExtraPath())
         os.makedirs(extraDir, exist_ok=True)
 
         # 1. Copy/convert both structures to PDB files in extra/.
@@ -339,7 +339,7 @@ class ProtPRosettaC(EMProtocol):
                     '-i', molFile,
                     '-of', 'sdf',
                     '-o', 'protac_ligand',
-                    '-od', os.path.join(extraDir,'prosettac')
+                    '-od', extraDir
                 ],
                 env=OPENBABEL_DIC,
                 cwd=self._getPath()
