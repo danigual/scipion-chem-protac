@@ -44,7 +44,8 @@ from pwchem import Plugin as pwchemPlugin
 from rosetta import Plugin as RosettaPlugin
 
 from protac import Plugin
-from protac.constants import (FRODOCK_BINARIES, FRODOCK_DIC, VINA_DIC, ADFRSUITE_DIC,
+from autodock import VINA_DIC
+from protac.constants import (FRODOCK_BINARIES, FRODOCK_DIC, ADFRSUITE_DIC,
                               VOROMQA_DIC, FCC_DIC, PROTAC_MODEL_DIC,
                               PROTAC_MODEL_PYTHON_DIC, PROSETTAC_PYTHON2_DIC)
 from protac.protocols import ProtPROTACModel

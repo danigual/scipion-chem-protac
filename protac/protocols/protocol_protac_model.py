@@ -250,6 +250,17 @@ class ProtPROTACModel(EMProtocol):
             cwd=self._getPath()
         )
 
+        # SMILES written from coordinate files carry fixed valences (every atom comes
+        # out bracketed), which PROTAC-Model cannot use as a bond order template
+        pwchemPlugin.runScript(
+            self,
+            'clean_smiles.py',
+            ['-i', smilesCsv, '--check-substructures'],
+            env=RDKIT_DIC,
+            cwd=self._getPath(),
+            scriptDir=os.path.dirname(Plugin.getPluginScript('clean_smiles.py'))
+        )
+
         with open(smilesCsv, newline='') as f:
             reader = csv.DictReader(f)
             smilesColumn = next(
